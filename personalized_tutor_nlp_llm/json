@@ -1,0 +1,49 @@
+JSON number 1
+
+
+
+
+{
+    "user_id": "uuid_str_or_int", // Uplas User ID
+    "session_id": "uuid_str", // For tracking conversation history (optional, can be managed by agent)
+    "query_text": "User's question here",
+    "context": {
+        "course_id": "uuid_str_or_int", // Optional
+        "topic_id": "uuid_str_or_int",  // Optional, from MCourse page
+        "project_id": "uuid_str_or_int", // Optional, from UProjeX page
+        "previous_assessment_feedback": "Text of feedback if triggered by project failure" // Optional
+    },
+    "user_profile_snapshot": { // Sent by Django to avoid multiple DB lookups by agent
+        "industry": "Technology",
+        "profession": "Software Engineer",
+        "country": "Kenya",
+        "city": "Nairobi",
+        "preferred_tutor_persona": "Friendly", // From UserProfile.preferred_tutor_persona
+        "learning_style_preference": {"visual": 0.7, "kinesthetic": 0.3}, // From UserProfile
+        "current_knowledge_level": {"Python": "Intermediate", "TopicX": "Beginner"} // From UserProfile or UserTopicAttempt
+    },
+    "conversation_history": [ // Optional: last N turns for context
+        {"role": "user", "content": "Previous question"},
+        {"role": "assistant", "content": "Previous answer"}
+    ]
+}
+
+
+
+JSON number 2
+
+
+{
+    "answer_text": "Personalized answer from the AI tutor...",
+    "suggested_follow_up_questions": [ // Optional
+        "Can you explain concept Y in more detail?",
+        "Show me an example related to Z."
+    ],
+    "generated_analogies": [ // Optional, for meta-learning or display
+        {"analogy": "Concept A is like X in your field of Y.", "relevance_score": 0.8}
+    ],
+    "debug_info": { // Optional, for development
+        "prompt_used": "Actual prompt sent to LLM...",
+        "llm_model_name": "gemini-pro"
+    }
+}
