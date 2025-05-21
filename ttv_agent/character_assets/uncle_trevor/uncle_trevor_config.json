@@ -1,1 +1,37 @@
-
+{
+  "character_name": "uncle_trevor",
+  "service_avatar_id": "uncle_trevor_uplas_v2_standard_XYZ",
+  "description": "Uncle Trevor: A wise, avuncular, and experienced instructor with a friendly demeanor.",
+  "default_voice_settings": {
+    "service_tts_engine": "google_cloud_tts_preferred",
+    "service_voice_id": "en-US-Studio-M",
+    "language_code": "en-US"
+  },
+  "attires": [
+    {
+      "name": "cozy_cardigan_green",
+      "service_attire_id": "ut_attire_cardigan_green_01_XYZ",
+      "tags": ["casual", "storytelling", "friendly", "daily_default"],
+      "thumbnail_local_ref": "ut_thumbnail_cardigan_green.jpg"
+    },
+    {
+      "name": "smart_button_shirt_blue_check",
+      "service_attire_id": "ut_attire_shirt_blue_check_02_XYZ",
+      "tags": ["everyday", "tutorial", "clear_explainer"],
+      "thumbnail_local_ref": "ut_thumbnail_shirt_blue_check.jpg"
+    },
+    {
+      "name": "professor_jacket_with_vest_charcoal",
+      "service_attire_id": "ut_attire_jacket_vest_charcoal_03_XYZ",
+      "tags": ["formal", "lecture", "wise_mentor"],
+      "thumbnail_local_ref": "ut_thumbnail_jacket_vest_charcoal.jpg"
+    }
+  ],
+  "default_attire_name": "cozy_cardigan_green",
+  "supported_moods_or_styles_by_service": [
+    "warm_mentor",
+    "thoughtful_explainer",
+    "encouraging_guide",
+    "neutral_informative"
+  ]
+}
