@@ -156,4 +156,43 @@ async def test_process_video_generation_task_successful_pipeline(basic_ttv_reque
 
         # Assertions on mock calls
         mock_gen_script.assert_awaited_once()
-        mock_gen
+        mock_gen_audio.assert_awaited_once_with(script="[SCENE] Mocked Script Content", instructor=ANY, lang=ANY)
+        mock_gen_avatar.assert_awaited_once_with(audio_url="gs://mock/audio.mp3", instructor=ANY, instructor_attire=ANY)
+        
+        # Assert callback to Django
+        mock_django_callback.assert_awaited_once()
+        callback_args, callback_kwargs = mock_django_callback.call_args
+        # callback_url = callback_args[0] # First positional argument is the URL
+        callback_payload_json = callback_kwargs['json'] # Payload is passed as json kwarg
+        
+        assert callback_payload_json["job_id"] == job_id
+        assert callback_payload_json["status"] == VideoGenerationJobStatus.COMPLETED.value
+        assert callback_payload_json["video_url"] == "https://mock/video.mp4"
+
+
+@pytest.mark.asyncio
+async def test_process_video_generation_task_script_failure(basic_ttv_request_payload: GenerateVideoRequest):
+    """Test pipeline failure at the script generation stage."""
+    job_id = f"ttvjob_test_script_fail_{uuid.uuid4()}"
+    video_jobs[job_id] = {"status": VideoGenerationJobStatus.PENDING, "user_id": basic_ttv_request_payload.user_id}
+
+    with patch.object(mock_script_llm, 'generate_script', new_callable=AsyncMock, side_effect=Exception("LLM Script Error")) as mock_gen_script, \
+         patch('httpx.AsyncClient.post', new_callable=AsyncMock) as mock_django_callback:
+
+        await process_video_generation_task(job_id, basic_ttv_request_payload)
+
+        assert video_jobs[job_id]["status"] == VideoGenerationJobStatus.FAILED
+        assert "LLM Script Error" in video_jobs[job_id]["error_message"]
+        assert video_jobs[job_id]["video_url"] is None
+        
+        mock_gen_script.assert_awaited_once()
+        mock_django_callback.assert_awaited_once() # Callback should still be made with failure status
+        callback_payload_json = mock_django_callback.call_args.kwargs['json']
+        assert callback_payload_json["status"] == VideoGenerationJobStatus.FAILED.value
+        assert "LLM Script Error" in callback_payload_json["error_message"]
+
+# Add more tests for failures at TTS stage, Avatar stage, Django callback failure etc.
+
+# To run these tests (requires pytest and pytest-asyncio):
+# From within uplas-ai-agents/ttv_agent/
+# pytest
