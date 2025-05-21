@@ -11,65 +11,57 @@ import random # For mock elements
 
 class UserProfileSnapshotForProjects(BaseModel):
     # Fields from User & UserProfile relevant for project suggestions
-    user_id: str # To link suggestions back if needed, or for logging
-    industry: Optional[str] = Field(None, examples=["Finance", "Healthcare", "Creative Arts"])
-    profession: Optional[str] = Field(None, examples=["Data Analyst", "UX Designer", "Student"])
-    career_interest: Optional[str] = Field(None, examples=["Machine Learning Engineer", "Game Developer"])
+    user_id: str = Field(..., examples=["user_uuid_abc123"])
+    industry: Optional[str] = Field(None, examples=["Finance", "Healthcare", "Creative Arts", "Education"])
+    profession: Optional[str] = Field(None, examples=["Data Analyst", "UX Designer", "Student", "Software Developer"])
+    career_interest: Optional[str] = Field(None, examples=["Machine Learning Engineer", "Game Developer", "Cloud Architect"])
     # Example: {"Python": "Intermediate", "Data Analysis": "Beginner", "Web Development": "Novice"}
-    current_knowledge_level: Optional[Dict[str, str]] = Field(default_factory=dict) 
-    areas_of_interest: Optional[List[str]] = Field(default_factory=list, examples=[["NLP", "Ethical AI"], ["Sustainable Tech"]])
-    learning_goals: Optional[str] = Field(None, examples=["Build a portfolio piece for data visualization.", "Understand full-stack development."])
-    # Potentially add completed_course_ids or topics to inform suggestions
-    # completed_course_ids: Optional[List[str]] = Field(default_factory=list)
+    current_knowledge_level: Optional[Dict[str, str]] = Field(default_factory=dict, examples=[{"Python": "Intermediate", "SQL": "Intermediate"}])
+    areas_of_interest: Optional[List[str]] = Field(default_factory=list, examples=[["NLP", "Ethical AI"], ["Sustainable Tech", "Data Visualization"]])
+    learning_goals: Optional[str] = Field(None, examples=["Build a portfolio piece for data visualization.", "Understand full-stack development principles."])
+    completed_course_ids: Optional[List[str]] = Field(default_factory=list, examples=["course_uuid_1", "course_uuid_2"])
 
 
 class ProjectPreferences(BaseModel):
-    difficulty_level: Optional[str] = Field("intermediate", examples=["beginner", "intermediate", "advanced"]) # Align with Project.DIFFICULTY_CHOICES
-    # Example: ["Python", "JavaScript", "FastAPI"] or "Any"
-    preferred_technologies: Optional[List[str]] = Field(default_factory=list) 
-    # Example: "Data Analysis", "Web Application", "AI Model"
-    project_type_focus: Optional[str] = Field(None, examples=["Portfolio Piece", "Skill Development", "Exploratory"]) 
-    time_commitment_hours_estimate: Optional[int] = Field(None, examples=[20, 40], ge=5) # Estimated hours user can commit
+    difficulty_level: Optional[str] = Field("intermediate", examples=["beginner", "intermediate", "advanced"])
+    preferred_technologies: Optional[List[str]] = Field(default_factory=list, examples=[["Python", "FastAPI"], ["JavaScript", "React"]])
+    project_type_focus: Optional[str] = Field(None, examples=["Portfolio Piece", "Skill Enhancement", "Exploratory Research"])
+    time_commitment_hours_estimate: Optional[int] = Field(None, examples=[20, 40], ge=5, le=100)
 
 
 class ProjectIdeaGenerationRequest(BaseModel):
     user_profile_snapshot: UserProfileSnapshotForProjects
     preferences: Optional[ProjectPreferences] = Field(default_factory=ProjectPreferences)
-    # Number of project ideas to generate
-    number_of_ideas: Optional[int] = Field(1, ge=1, le=3) # Capped at 3 for mock diversity and performance
+    number_of_ideas: Optional[int] = Field(1, ge=1, le=3) # Max 3 ideas per request for this agent
 
 
 class GeneratedProjectTask(BaseModel):
-    task_id: int
-    description: str
-    estimated_sub_duration: Optional[str] = None # e.g., "2-3 hours", "1 day"
+    task_id: int = Field(..., ge=1)
+    description: str = Field(..., min_length=10)
+    estimated_sub_duration: Optional[str] = Field(None, examples=["2-4 hours", "1 day"])
 
 
-class GeneratedProjectIdea(BaseModel): # This structure should align with Project.ai_generated_spec_json
-    # Also matches conceptual Project model fields from Uplas Backend Integration Guide 
-    request_id: Optional[str] = None # For tracking, can be passed in request or generated
-    project_idea_id: str = Field(default_factory=lambda: f"idea_{uuid.uuid4().hex[:8]}")
+class GeneratedProjectIdea(BaseModel):
+    request_id: Optional[str] = None # Can be linked to an initial request ID if provided by caller
+    project_idea_id: str = Field(default_factory=lambda: f"proj_idea_{uuid.uuid4().hex[:10]}")
     
-    title: str = Field(..., examples=["Ethical AI Chatbot Analyzer"])
-    subtitle: Optional[str] = Field(None, examples=["Analyze chatbot conversations for potential biases."])
-    description_html: str = Field(..., examples=["<p>This project involves collecting a dataset of chatbot interactions...</p>"])
-    difficulty_level: str = Field(..., examples=["intermediate"]) # beginner, intermediate, advanced
-    estimated_duration: Optional[str] = Field(None, examples=["15-20 hours"]) # e.g., "15 hours", "2-3 weeks"
+    title: str = Field(..., min_length=5, examples=["Personalized Financial Health Dashboard for Millennials"])
+    subtitle: Optional[str] = Field(None, min_length=10, examples=["An interactive web app to track spending, set budgets, and visualize financial progress using Plaid API integration."])
+    description_html: str = Field(..., min_length=50, examples=["<p>This project aims to develop a comprehensive financial health dashboard tailored for young adults...</p>"])
+    difficulty_level: str = Field(..., examples=["intermediate"])
+    estimated_duration: Optional[str] = Field(None, examples=["25-35 hours", "Approx. 2-3 weeks part-time"])
     
-    learning_objectives_html: List[str] = Field(default_factory=list, examples=[["Understand bias detection techniques."], ["Apply NLP for text analysis."]])
-    requirements_html: Optional[List[str]] = Field(default_factory=list, examples=[["Basic Python knowledge."], ["Familiarity with REST APIs."]])
-    target_audience_html: Optional[List[str]] = Field(default_factory=list, examples=[["Students learning AI ethics."], ["Developers building chatbots."]])
+    learning_objectives_html: List[str] = Field(default_factory=list, min_items=2, examples=[["<li>Understand and implement secure API integration (e.g., Plaid).</li>"], ["<li>Master data visualization techniques for financial data using Plotly Dash.</li>"]])
+    requirements_html: Optional[List[str]] = Field(default_factory=list, min_items=1, examples=[["<li>Intermediate Python skills (FastAPI/Flask preferred).</li>"], ["<li>Basic understanding of REST APIs and JSON.</li>"]])
+    target_audience_html: Optional[List[str]] = Field(default_factory=list, examples=[["<li>Individuals in their 20s-30s looking to manage personal finances.</li>"], ["<li>Developers interested in FinTech applications.</li>"]])
     
-    # key_tasks_html or a structured list of tasks
-    key_tasks: List[GeneratedProjectTask] = Field(default_factory=list)
-    suggested_technologies: List[str] = Field(default_factory=list, examples=[["Python", "Pandas", "NLTK", "FastAPI"]])
+    key_tasks: List[GeneratedProjectTask] = Field(default_factory=list, min_items=3)
+    suggested_technologies: List[str] = Field(default_factory=list, min_items=1, examples=[["Python", "FastAPI", "Plotly Dash", "Plaid API"]])
     
-    # Optional fields from AI
-    personalization_rationale: Optional[str] = None # Why this project is good for *this* user
-    potential_challenges: Optional[List[str]] = Field(default_factory=list)
-    # A very basic rubric preview, more detailed rubric would be for assessment phase
-    assessment_rubric_preview_html: Optional[List[str]] = Field(default_factory=list, examples=[["Completion of all key tasks (40%)"], ["Code quality and clarity (30%)"]])
-    real_world_application_examples: Optional[List[str]] = Field(default_factory=list)
+    personalization_rationale: Optional[str] = Field(None, min_length=20, examples=["Given your interest in FinTech and 'Intermediate' Python knowledge, this project offers a practical way to apply API skills and data visualization."])
+    potential_challenges: Optional[List[str]] = Field(default_factory=list, examples=[["Managing Plaid API rate limits and sandbox data variability."], ["Ensuring data security and privacy for financial information."]])
+    assessment_rubric_preview_html: Optional[List[str]] = Field(default_factory=list, min_items=2, examples=[["<li>Core functionality (Plaid integration, dashboard display): 50%</li>"], ["<li>Code quality and API design: 30%</li>"]])
+    real_world_application_examples: Optional[List[str]] = Field(default_factory=list, examples=[["Serves as a base for a personal finance SaaS product."], ["Demonstrates skills valuable for FinTech developer roles."]])
 
 
 class ProjectIdeaGenerationResponse(BaseModel):
@@ -80,12 +72,12 @@ class ProjectIdeaGenerationResponse(BaseModel):
 # --- FastAPI Application ---
 app = FastAPI(
     title="Uplas AI Project Idea Generator",
-    description="Generates personalized real-world project ideas using a (mocked) LLM.",
-    version="0.1.1" # Incremented version after refinements
+    description="Generates personalized real-world project ideas using a (mocked) LLM for idea generation.",
+    version="0.2.0" # Version update for more refined mock
 )
 
-# --- Mock LLM Client for Project Idea Generation ---
-MOCKED_PROJECT_LLM_NAME = "mocked-gemini-pro-project-gen-v2.1" # Updated mock version
+# --- Mock LLM Client for Project Idea Generation (Refined as per previous step) ---
+MOCKED_PROJECT_LLM_NAME = "mocked-gemini-pro-project-gen-v2.2" # From previous refinement
 
 class MockProjectLLMClient:
     async def generate_ideas(
@@ -93,21 +85,18 @@ class MockProjectLLMClient:
         user_profile: UserProfileSnapshotForProjects,
         preferences: ProjectPreferences,
         num_ideas: int
-    ) -> List[Dict[str, Any]]: # Returns a list of dicts, each conforming to GeneratedProjectIdea structure
-        print(f"\n--- Mock Project LLM ({MOCKED_PROJECT_LLM_NAME}) Generating Ideas ---")
+    ) -> List[Dict[str, Any]]:
+        print(f"\n--- Mock Project LLM ({MOCKED_PROJECT_LLM_NAME}) Generating {num_ideas} Ideas ---")
         print(f"User Profile: Industry='{user_profile.industry}', Profession='{user_profile.profession}', Interests='{user_profile.areas_of_interest}', Knowledge='{user_profile.current_knowledge_level}'")
         print(f"Preferences: Difficulty='{preferences.difficulty_level}', Tech='{preferences.preferred_technologies}', Focus='{preferences.project_type_focus}'")
-        print(f"Number of Ideas Requested: {num_ideas}")
         print("---------------------------------------------------------------------\n")
 
         generated_project_ideas = []
-        
-        # More diverse base project ideas with associated domains/keywords
         base_project_templates = [
-            {"title_template": "Interactive {domain} Data Visualization Dashboard", "domain": "Data Analytics", "keywords": ["dashboard", "visualization"], "default_tech": ["Plotly Dash", "Streamlit"]},
-            {"title_template": "Real-Time {asset_type} Monitoring App", "domain": "FinTech/IoT", "keywords": ["real-time", "monitoring", "api"], "default_tech": ["WebSocket", "FastAPI", "TimescaleDB"]},
-            {"title_template": "{commerce_type} Product Recommendation Engine", "domain": "E-commerce/AI", "keywords": ["recommendation", "machine learning", "personalization"], "default_tech": ["Scikit-learn", "Collaborative Filtering"]},
-            {"title_template": "Personalized {content_type} News Aggregator", "domain": "Web/Content", "keywords": ["aggregator", "nlp", "web scraping"], "default_tech": ["BeautifulSoup", "RSS feeds", "Flask"]},
+            {"title_template": "Interactive {domain} Data Visualization Dashboard", "domain": "Data Analytics", "keywords": ["dashboard", "visualization"], "default_tech": ["Plotly Dash", "Streamlit", "Python"]},
+            {"title_template": "Real-Time {asset_type} Monitoring App", "domain": "FinTech/IoT", "keywords": ["real-time", "monitoring", "api"], "default_tech": ["WebSocket", "FastAPI", "Python"]},
+            {"title_template": "{commerce_type} Product Recommendation Engine", "domain": "E-commerce/AI", "keywords": ["recommendation", "machine learning"], "default_tech": ["Scikit-learn", "Python", "Pandas"]},
+            {"title_template": "Personalized {content_type} News Aggregator", "domain": "Web/Content", "keywords": ["aggregator", "nlp", "scraping"], "default_tech": ["BeautifulSoup", "Flask", "Python"]},
             {"title_template": "AI-Powered {health_area} Symptom Checker (Conceptual)", "domain": "HealthTech/AI", "keywords": ["ai", "chatbot", "health"], "default_tech": ["Rasa/Dialogflow (Conceptual)", "Knowledge Base"]},
             {"title_template": "Sustainable {lifestyle_aspect} Planner", "domain": "Lifestyle/Web", "keywords": ["sustainability", "planning", "user data"], "default_tech": ["React", "Firebase"]},
             {"title_template": "Local {interest_type} Discovery Platform API", "domain": "Social/API", "keywords": ["social", "geo-location", "events", "api design"], "default_tech": ["Node.js/Express", "MongoDB Atlas"]},
@@ -116,135 +105,127 @@ class MockProjectLLMClient:
             {"title_template": "Community {skill_type} Skill-Share Network Backend", "domain": "Social/Backend", "keywords": ["community", "skill sharing", "database design"], "default_tech": ["Django REST Framework", "PostgreSQL"]}
         ]
         
-        random.shuffle(base_project_templates) # Use the correct variable name
+        random.shuffle(base_project_templates)
 
-        for i in range(min(num_ideas, len(base_project_templates))): # Use the correct variable name
+        for i in range(min(num_ideas, len(base_project_templates))):
             idea_id_suffix = uuid.uuid4().hex[:4]
-            template = base_project_templates[i] # Use the correct variable name
+            template = base_project_templates[i]
             base_title = template["title_template"]
             domain = template["domain"]
             
             difficulty = preferences.difficulty_level or random.choice(["beginner", "intermediate", "advanced"])
             
-            # Substitute placeholders in title template
-            # This is very basic, a real template engine or more complex logic would be better
             title_fillers = {
                 "{domain}": user_profile.industry or domain,
-                "{asset_type}": random.choice(["Stock", "Crypto", "Sensor"]),
-                "{commerce_type}": random.choice(["E-commerce", "Service Booking"]),
-                "{content_type}": random.choice(["Tech", "Financial", "Local"]),
-                "{health_area}": random.choice(["General Wellness", "Fitness Query"]),
-                "{lifestyle_aspect}": random.choice(["Meal", "Travel", "Energy Use"]),
-                "{interest_type}": random.choice(["Event", "Hobby Group", "Local Business"]),
-                "{activity_type}": random.choice(["Fitness", "Coding", "Learning"]),
-                "{subject}": random.choice(["Python", "History", "Math"]),
-                "{skill_type}": random.choice(["Coding", "Language", "Crafting"])
+                "{asset_type}": random.choice(["Stock", "Crypto", "Sensor Data"]),
+                "{commerce_type}": random.choice(["Retail", "Service Booking", "Digital Product"]),
+                "{content_type}": random.choice(["Tech News", "Financial Insights", "Local Happenings"]),
+                "{health_area}": random.choice(["General Wellness Query", "Fitness Activity Log", "Mental Health Check-in"]),
+                "{lifestyle_aspect}": random.choice(["Meal Planning", "Sustainable Travel", "Home Energy Use"]),
+                "{interest_type}": random.choice(["Community Event", "Hobby Group Finder", "Local Business Showcase"]),
+                "{activity_type}": random.choice(["Fitness Steps", "Coding Hours", "Language Learning"]),
+                "{subject}": random.choice(["Python Programming", "World History", "Calculus Concepts"]),
+                "{skill_type}": random.choice(["Coding Language", "Foreign Language", "Crafting Skill"])
             }
             current_project_title = base_title
             for placeholder, value in title_fillers.items():
                 current_project_title = current_project_title.replace(placeholder, value)
             
-            project_title = f"{current_project_title}" # Start with the filled template
+            project_title = f"{current_project_title}"
             personalization_notes_list = []
 
-            current_industry = user_profile.industry or domain # Fallback to template's domain
+            current_industry = user_profile.industry or domain
             if user_profile.industry:
                 project_title = f"{user_profile.industry}-Focused: {current_project_title}"
                 personalization_notes_list.append(f"Directly applicable to the {user_profile.industry} sector.")
-            elif domain and domain not in project_title : # Add domain if not already part of title from template substitution
+            elif domain and domain not in project_title :
                  project_title = f"{domain}-Related: {current_project_title}"
                  personalization_notes_list.append(f"Relevant to the {domain} domain.")
 
-
             if user_profile.profession:
-                project_title += f" (for a {user_profile.profession})"
+                project_title += f" (Designed for a {user_profile.profession})"
                 personalization_notes_list.append(f"Considers the perspective and potential skill application for a {user_profile.profession}.")
             
             user_interests = user_profile.areas_of_interest or []
             if user_interests:
                 interest = random.choice(user_interests) if user_interests else template.get("keywords",["a key topic"])[0]
-                project_title += f" (Exploring {interest.title()})"
+                project_title += f" (incorporating {interest.title()})"
                 personalization_notes_list.append(f"Allows exploration of your stated interest in {interest}.")
             elif template.get("keywords"):
                  personalization_notes_list.append(f"Touches upon themes like {', '.join(template['keywords'])}.")
             else:
                 personalization_notes_list.append("A generally useful project to build foundational and practical skills.")
 
-
             tech_stack = []
             if preferences.preferred_technologies:
                 tech_stack.extend(preferences.preferred_technologies)
-            else: # Suggest based on domain/title if no preference
-                tech_stack.extend(template.get("default_tech", ["Python"])) # Start with template default
+            else: 
+                tech_stack.extend(template.get("default_tech", ["Python", "Basic Web Tech"]))
 
-            # Add more techs based on keywords or knowledge, ensuring some relevance
-            if any(kw in project_title.lower() for kw in ["web", "dashboard", "platform", "aggregator", "network", "api"]):
-                if not any(t.lower() in map(str.lower, tech_stack) for t in ["FastAPI", "Flask", "Django", "React", "Vue.js", "Node.js", "Express"]):
-                    tech_stack.append(random.choice(["FastAPI", "Flask", "Node.js/Express"]))
-            if any(kw in project_title.lower() for kw in ["data", "ai", "system", "monitoring", "recommendation", "analyzer", "engine", "machine learning"]):
-                 if not any(t.lower() in map(str.lower, tech_stack) for t in ["Pandas", "Scikit-learn", "TensorFlow", "PyTorch"]):
+            if any(kw in project_title.lower() for kw in ["web", "dashboard", "platform", "aggregator", "network", "api", "app"]):
+                if not any(t.lower() in map(str.lower, tech_stack) for t in ["FastAPI", "Flask", "Django", "React", "Vue.js", "Node.js", "Express", "HTML", "CSS"]):
+                    tech_stack.append(random.choice(["FastAPI", "Flask", "Node.js/Express", "React"]))
+            if any(kw in project_title.lower() for kw in ["data", "ai", "system", "monitoring", "recommendation", "analyzer", "engine", "machine learning", "nlp"]):
+                 if not any(t.lower() in map(str.lower, tech_stack) for t in ["Pandas", "Scikit-learn", "TensorFlow", "PyTorch", "NLTK"]):
                     tech_stack.append("Pandas")
-                    if "ai" in project_title.lower() or "recommendation" in project_title.lower() or "machine learning" in project_title.lower():
-                         tech_stack.append(random.choice(["Scikit-learn", "NLTK"]))
+                    if "ai" in project_title.lower() or "recommendation" in project_title.lower() or "nlp" in project_title.lower() or "machine learning" in project_title.lower():
+                         tech_stack.append(random.choice(["Scikit-learn", "NLTK", "spaCy"]))
             
-            tech_stack = sorted(list(set(tech_stack))) # Unique and sorted
+            tech_stack = sorted(list(set(tech_stack)))
 
-            description = f"<p>This is a '{difficulty}' level project designed to help you build an innovative solution: '{project_title}'. " # Use the refined project_title
-            description += f"You will get hands-on experience with technologies such as {', '.join(tech_stack)}. "
+            description = f"<p>Embark on a '{difficulty}' level project to develop: '{project_title}'. "
+            description += f"This endeavor will provide you with substantial hands-on experience with a modern tech stack including {', '.join(tech_stack)}. "
             if user_profile.learning_goals:
-                description += f"This project directly addresses your learning goal: '{user_profile.learning_goals[:70]}...'.</p>"
+                description += f"This project is designed to help you achieve your learning goal: '{user_profile.learning_goals[:70]}...'.</p>"
             else:
-                description += "It offers a fantastic opportunity to create a practical application and significantly expand your skillset by tackling a real-world inspired challenge.</p>"
+                description += "It's an excellent opportunity to build a practical, portfolio-worthy application while deepening your technical expertise by tackling a real-world inspired challenge.</p>"
 
             estimated_hours = preferences.time_commitment_hours_estimate or random.randint(15, 50)
             learning_objectives = [
-                f"<li>Gain practical, hands-on experience with {', '.join(tech_stack)}.</li>",
-                f"<li>Develop a tangible project suitable for a portfolio, focusing on {preferences.project_type_focus or 'real-world problem solving and application development'}.</li>",
-                f"<li>Enhance your skills in {random.choice(['API design', 'data manipulation', 'frontend interaction', 'system architecture', 'algorithmic thinking'])}.</li>"
+                f"<li>Gain practical, hands-on experience designing and implementing solutions with {', '.join(tech_stack)}.</li>",
+                f"<li>Develop a tangible project suitable for showcasing in your portfolio, with a focus on {preferences.project_type_focus or 'real-world problem solving and application development'}.</li>",
+                f"<li>Enhance your skills in critical areas such as {random.choice(['API development and integration', 'data processing and analysis', 'interactive frontend design', 'backend system architecture', 'algorithmic problem-solving'])}.</li>"
             ]
             if user_interests:
-                learning_objectives.append(f"<li>Deepen your understanding of concepts related to your interest in {random.choice(user_interests)}.</li>")
+                learning_objectives.append(f"<li>Deepen your understanding and application of concepts related to your interest in {random.choice(user_interests)}.</li>")
             else:
-                learning_objectives.append(f"<li>Explore key concepts within the {domain} domain through practical application.</li>")
-
+                learning_objectives.append(f"<li>Explore key concepts within the {domain} domain through direct, practical application and development.</li>")
 
             idea = {
-                "request_id": f"req_{uuid.uuid4().hex[:6]}", # A unique ID for this specific generation request event
-                "project_idea_id": f"idea_{idea_id_suffix}_{i+1}", # A unique ID for this specific idea
+                "request_id": f"req_{user_profile.user_id}_{uuid.uuid4().hex[:4]}",
+                "project_idea_id": f"idea_{idea_id_suffix}_{i+1}",
                 "title": project_title,
                 "subtitle": f"A {difficulty} project focusing on {domain}, utilizing {tech_stack[0] if tech_stack else 'key technologies'} to address a real-world inspired scenario.",
                 "description_html": description,
                 "difficulty_level": difficulty,
-                "estimated_duration": f"Approx. {estimated_hours} - {estimated_hours + random.randint(5,15)} hours",
+                "estimated_duration": f"Approx. {estimated_hours} - {estimated_hours + random.randint(5,15)} hours ({random.choice(['1-2 weeks', '2-3 weeks', '3-4 weeks'])} part-time)",
                 "learning_objectives_html": learning_objectives,
                 "requirements_html": [
                     f"<li>{user_profile.current_knowledge_level.get(tech_stack[0].split('/')[0].strip().split(' ')[0], 'Basic to intermediate understanding of') if tech_stack and user_profile.current_knowledge_level else 'Fundamental programming concepts are recommended'}.</li>", 
-                    "<li>Access to a computer with internet and a suitable code editor/IDE (e.g., VS Code).</li>",
+                    "<li>A personal computer with internet access and a suitable code editor/IDE (e.g., VS Code).</li>",
                     "<li>A proactive learning attitude and the ability to research solutions independently using documentation and online resources.</li>"
                 ],
                 "key_tasks": [
-                    {"task_id": 1, "description": "Project Planning & Environment Setup: Clearly define the project's scope based on this idea. Choose your specific tools/libraries from the suggestions. Initialize your project repository with Git and set up a dedicated virtual environment.", "estimated_sub_duration": "2-4 hours"},
-                    {"task_id": 2, "description": f"Core Logic Implementation: Develop the primary backend functionalities and algorithms using {tech_stack[0] if tech_stack else 'your chosen primary language/framework'}. Focus on creating clean, modular, and understandable code."},
-                    {"task_id": 3, "description": "Data Handling & Integration (if applicable): Design any necessary data schemas. Implement data sourcing (e.g., from a mock API, CSV files, or a simple database) and any required data transformation or cleaning logic."},
-                    {"task_id": 4, "description": "API/User Interface Development (if applicable): Build the necessary API endpoints for interaction if it's a backend project, or develop a basic user interface to demonstrate the project's functionality if it's a full-stack or frontend project."},
-                    {"task_id": 5, "description": "Testing and Refinement: Write unit or integration tests for core components to ensure correctness. Debug any issues and refine the project based on self-review and testing."},
-                    {"task_id": 6, "description": "Documentation & Deployment Preparation: Create a comprehensive README.md file with setup instructions, an overview of the project, and clear usage examples. Prepare (simulated) deployment steps or a brief explanation of how it could be deployed."}
+                    {"task_id": 1, "description": "Phase 1: Project Initialization & Detailed Planning - Refine project scope, select specific tools/libraries from suggestions, outline core features, set up Git repository, and configure your development environment (virtual environment, linters).", "estimated_sub_duration": "2-4 hours"},
+                    {"task_id": 2, "description": f"Phase 2: Core Logic Implementation - Develop the primary backend functionalities and algorithms using {tech_stack[0] if tech_stack else 'your chosen primary language/framework'}. Focus on creating clean, modular, and well-commented code for main functionalities."},
+                    {"task_id": 3, "description": "Phase 3: Data Handling & Integration (if applicable) - Design necessary data schemas (if using a database). Implement data sourcing (e.g., from external APIs, CSV files, or creating mock data) and any required data transformation, cleaning, or storage logic."},
+                    {"task_id": 4, "description": "Phase 4: API / User Interface Development (if applicable) - Build the necessary API endpoints for interaction if it's a backend-focused project, or develop a basic, functional user interface to demonstrate the project's capabilities if it's full-stack or frontend-focused."},
+                    {"task_id": 5, "description": "Phase 5: Testing, Refinement & Basic Documentation - Write unit or integration tests for critical components to ensure correctness. Debug issues, refine features based on self-review, and create a README.md with setup, usage, and key design decisions."}
                 ],
                 "suggested_technologies": tech_stack,
                 "personalization_rationale": " ".join(personalization_notes_list),
                 "assessment_rubric_preview_html": [
                     "<li>Successful Implementation of Core Functionality & All Key Tasks (50%)</li>", 
-                    f"<li>Code Quality, Readability, Organization, and Adherence to Best Practices for the Suggested Technologies (e.g., {tech_stack[0] if tech_stack else ''}) (30%)</li>",
-                    "<li>Project Documentation (Comprehensive README, Clear Code Comments) and (Optional but Recommended) Brief Video Presentation/Demo of the Working Project (20%)</li>"
+                    f"<li>Code Quality (Readability, Organization, Modularity) & Adherence to Best Practices for {tech_stack[0] if tech_stack else 'Selected Technologies'} (30%)</li>",
+                    "<li>Project Documentation (Comprehensive README.md, Clear Code Comments) and (Optional but Highly Recommended) a Brief Video Presentation or Live Demo of the Working Project (20%)</li>"
                 ],
                 "real_world_application_examples": [
-                    f"The principles and technologies used in this project are directly applicable in the {current_industry} sector for developing tools related to [example real-world task relevant to the project domain and industry].",
-                    f"This project can serve as a strong foundational component for a more complex system or a specialized tool, significantly enhancing your portfolio for roles such as a {user_profile.career_interest or 'Software Developer/Engineer'}."
+                    f"The principles and technologies used in this project are directly applicable in the {current_industry} sector for developing innovative tools related to [example real-world task relevant to the project domain and industry].",
+                    f"Completing this project can significantly enhance your portfolio, demonstrating practical skills for roles such as a {user_profile.career_interest or 'Software Developer/Engineer'}, especially if you aim to work with {', '.join(tech_stack)}."
                 ]
             }
             generated_project_ideas.append(idea)
         
-        # await asyncio.sleep(random.uniform(0.3, 1.2)) # Simulate LLM processing time
         return generated_project_ideas
 
 mock_project_llm = MockProjectLLMClient()
@@ -335,23 +316,20 @@ def construct_project_gen_prompt(
 }
 """
     prompt += "\nIMPORTANT: Ensure the entire response is a list of these valid JSON objects. Do not include any introductory or concluding text outside this JSON list structure. Each field must be populated appropriately. The personalization_rationale is key.\n"
-    return prompt
+    return prompt # This is a truncated representation; the full prompt from earlier is intended here.
+
 
 # --- API Endpoint ---
 @app.post("/v1/generate-project-ideas", response_model=ProjectIdeaGenerationResponse, summary="Generate Personalized Project Ideas")
 async def generate_project_ideas_endpoint(request_data: ProjectIdeaGenerationRequest):
     processing_start_time = time.perf_counter()
 
-    # This conceptual prompt would be used if calling a real LLM service.
-    # For the mock, we pass structured data directly to mock_project_llm.generate_ideas.
-    conceptual_llm_prompt = construct_project_gen_prompt(
+    conceptual_llm_prompt = construct_project_gen_prompt( # Construct conceptual prompt for debugging/logging
         user_profile=request_data.user_profile_snapshot,
         preferences=request_data.preferences,
         num_ideas=request_data.number_of_ideas
     )
-    # For debugging prompt construction:
-    # print(f"DEBUG: Conceptual LLM Prompt for Project Gen (First 1000 chars):\n{conceptual_llm_prompt[:1000]}...\n")
-
+    
     try:
         raw_ideas_from_llm = await mock_project_llm.generate_ideas(
             user_profile=request_data.user_profile_snapshot,
@@ -363,25 +341,21 @@ async def generate_project_ideas_endpoint(request_data: ProjectIdeaGenerationReq
         validation_errors_for_ideas = []
         for i, raw_idea in enumerate(raw_ideas_from_llm):
             try:
-                # Add request_id to each idea if not already present from LLM
-                # (though our mock now includes it conceptually)
-                raw_idea.setdefault("request_id", f"req_from_user_{request_data.user_profile_snapshot.user_id}_{i}")
+                raw_idea.setdefault("request_id", f"req_user_{request_data.user_profile_snapshot.user_id}_{i}")
                 validated_ideas.append(GeneratedProjectIdea(**raw_idea))
-            except Exception as e_val: # Catch Pydantic validation error for one idea
-                print(f"Warning: Failed to validate raw project idea #{i+1} from LLM mock: {raw_idea}. Error: {e_val}")
-                validation_errors_for_ideas.append({"idea_index": i, "raw_idea_title_sample": str(raw_idea.get("title", "N/A"))[:50], "error": str(e_val)})
-                # Optionally, skip this idea or try to fix it based on error type
+            except Exception as e_val:
+                print(f"Warning: Pydantic validation failed for raw project idea #{i+1} from LLM mock: {raw_idea}. Error: {e_val}")
+                validation_errors_for_ideas.append({"idea_index": i, "raw_idea_title_sample": str(raw_idea.get("title", "N/A"))[:50], "error_summary": str(e_val)[:200]})
 
-        if not validated_ideas and raw_ideas_from_llm: # If all failed validation but some were returned
-             # Log more details about why validation failed
-             print(f"Error: All {len(raw_ideas_from_llm)} ideas from LLM failed Pydantic validation. Errors: {validation_errors_for_ideas}")
-             raise HTTPException(status_code=500, detail=f"AI service returned project ideas, but they were in an unexpected or incomplete format. {len(validation_errors_for_ideas)} ideas had validation issues.")
-        if not validated_ideas: # If LLM returned nothing or all failed validation and raw was empty
-             raise HTTPException(status_code=404, detail="Could not generate suitable project ideas based on the provided profile and preferences. Please try adjusting your preferences or profile details, or try again later.")
+        if not validated_ideas and raw_ideas_from_llm:
+             print(f"Critical Error: All {len(raw_ideas_from_llm)} ideas from LLM failed Pydantic validation. Errors: {validation_errors_for_ideas}")
+             raise HTTPException(status_code=500, detail=f"AI service returned project ideas, but they were in an unexpected or incomplete format. {len(validation_errors_for_ideas)} idea(s) had validation issues. Please check agent logs.")
+        if not validated_ideas:
+             raise HTTPException(status_code=404, detail="Could not generate suitable project ideas based on the provided profile and preferences. Please try adjusting your input or try again later.")
 
     except Exception as e:
-        print(f"Error during project idea generation or LLM call: {e}") # Log full error
-        raise HTTPException(status_code=503, detail="Error communicating with the AI project generation service. Please try again later.")
+        print(f"Critical Error during project idea generation pipeline or LLM call: {e}")
+        raise HTTPException(status_code=503, detail="An unexpected error occurred with the AI project generation service. Please try again later.")
 
     processing_end_time = time.perf_counter()
     processing_time_ms = (processing_end_time - processing_start_time) * 1000
@@ -394,16 +368,15 @@ async def generate_project_ideas_endpoint(request_data: ProjectIdeaGenerationReq
         "ideas_validation_failures": len(validation_errors_for_ideas)
     }
     if os.getenv("UPLAS_DEBUG_MODE", "false").lower() == "true":
-        # Only include potentially large/sensitive prompt in debug mode
-        debug_info_dict["conceptual_llm_prompt_sent_sample"] = conceptual_llm_prompt[:2000] + "..." # Sample
+        debug_info_dict["conceptual_llm_prompt_sent_sample"] = conceptual_llm_prompt[:2500] + ("..." if len(conceptual_llm_prompt) > 2500 else "")
         if validation_errors_for_ideas:
-             debug_info_dict["validation_error_details_sample"] = validation_errors_for_ideas[:2] # Sample of errors
-
+             debug_info_dict["validation_error_details_sample"] = validation_errors_for_ideas[:3] # Sample of errors
 
     return ProjectIdeaGenerationResponse(
         generated_ideas=validated_ideas,
         debug_info=debug_info_dict
     )
 
-# To run this FastAPI app locally (from within uplas-ai-agents/project_generator_agent/ directory):
-# uvicorn main:app --reload --port 8004
+# To run this FastAPI app locally:
+# Ensure you are in the `uplas-ai-agents/project_generator_agent/` directory.
+# Then run: uvicorn main:app --reload --port 8004
