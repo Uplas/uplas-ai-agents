@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Request as FastAPIR
 from pydantic import BaseModel, Field, HttpUrl
 from typing import List, Dict, Optional, Any, Union
 from enum import Enum
+from .animation_logic.avatar_service_client import AvatarServiceClient # Relative import
 import os
 import uuid
 import time # For processing time and job IDs
