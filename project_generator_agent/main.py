@@ -46,7 +46,7 @@ class GeneratedProjectTask(BaseModel):
 
 
 class GeneratedProjectIdea(BaseModel): # This structure should align with Project.ai_generated_spec_json
-    # Also matches conceptual Project model fields from Uplas Backend Integration Guide
+    # Also matches conceptual Project model fields from Uplas Backend Integration Guide 
     request_id: Optional[str] = None # For tracking, can be passed in request or generated
     project_idea_id: str = Field(default_factory=lambda: f"idea_{uuid.uuid4().hex[:8]}")
     
@@ -116,11 +116,11 @@ class MockProjectLLMClient:
             {"title_template": "Community {skill_type} Skill-Share Network Backend", "domain": "Social/Backend", "keywords": ["community", "skill sharing", "database design"], "default_tech": ["Django REST Framework", "PostgreSQL"]}
         ]
         
-        random.shuffle(base_titles_and_domains) # Corrected variable name
+        random.shuffle(base_project_templates) # Use the correct variable name
 
-        for i in range(min(num_ideas, len(base_project_templates))): # Corrected variable name
+        for i in range(min(num_ideas, len(base_project_templates))): # Use the correct variable name
             idea_id_suffix = uuid.uuid4().hex[:4]
-            template = base_project_templates[i] # Corrected variable name
+            template = base_project_templates[i] # Use the correct variable name
             base_title = template["title_template"]
             domain = template["domain"]
             
@@ -144,14 +144,14 @@ class MockProjectLLMClient:
             for placeholder, value in title_fillers.items():
                 current_project_title = current_project_title.replace(placeholder, value)
             
-            project_title = f"{current_project_title}"
+            project_title = f"{current_project_title}" # Start with the filled template
             personalization_notes_list = []
 
-            current_industry = user_profile.industry or domain
-            if user_profile.industry: # Prioritize user's stated industry
+            current_industry = user_profile.industry or domain # Fallback to template's domain
+            if user_profile.industry:
                 project_title = f"{user_profile.industry}-Focused: {current_project_title}"
                 personalization_notes_list.append(f"Directly applicable to the {user_profile.industry} sector.")
-            elif domain: # Fallback to template's domain
+            elif domain and domain not in project_title : # Add domain if not already part of title from template substitution
                  project_title = f"{domain}-Related: {current_project_title}"
                  personalization_notes_list.append(f"Relevant to the {domain} domain.")
 
@@ -162,9 +162,11 @@ class MockProjectLLMClient:
             
             user_interests = user_profile.areas_of_interest or []
             if user_interests:
-                interest = random.choice(user_interests) if user_interests else template["keywords"][0] if template["keywords"] else "a key topic"
-                project_title += f" involving {interest.title()}"
+                interest = random.choice(user_interests) if user_interests else template.get("keywords",["a key topic"])[0]
+                project_title += f" (Exploring {interest.title()})"
                 personalization_notes_list.append(f"Allows exploration of your stated interest in {interest}.")
+            elif template.get("keywords"):
+                 personalization_notes_list.append(f"Touches upon themes like {', '.join(template['keywords'])}.")
             else:
                 personalization_notes_list.append("A generally useful project to build foundational and practical skills.")
 
@@ -176,18 +178,18 @@ class MockProjectLLMClient:
                 tech_stack.extend(template.get("default_tech", ["Python"])) # Start with template default
 
             # Add more techs based on keywords or knowledge, ensuring some relevance
-            if any(kw in project_title.lower() for kw in ["web", "dashboard", "platform", "aggregator", "network"]):
-                if not any(t in tech_stack for t in ["FastAPI", "Flask", "Django", "React", "Vue.js", "Node.js"]):
+            if any(kw in project_title.lower() for kw in ["web", "dashboard", "platform", "aggregator", "network", "api"]):
+                if not any(t.lower() in map(str.lower, tech_stack) for t in ["FastAPI", "Flask", "Django", "React", "Vue.js", "Node.js", "Express"]):
                     tech_stack.append(random.choice(["FastAPI", "Flask", "Node.js/Express"]))
-            if any(kw in project_title.lower() for kw in ["data", "ai", "system", "monitoring", "recommendation", "analyzer"]):
-                 if not any(t in tech_stack for t in ["Pandas", "Scikit-learn", "TensorFlow", "PyTorch"]):
+            if any(kw in project_title.lower() for kw in ["data", "ai", "system", "monitoring", "recommendation", "analyzer", "engine", "machine learning"]):
+                 if not any(t.lower() in map(str.lower, tech_stack) for t in ["Pandas", "Scikit-learn", "TensorFlow", "PyTorch"]):
                     tech_stack.append("Pandas")
-                    if "AI" in project_title or "Recommendation" in project_title:
+                    if "ai" in project_title.lower() or "recommendation" in project_title.lower() or "machine learning" in project_title.lower():
                          tech_stack.append(random.choice(["Scikit-learn", "NLTK"]))
             
             tech_stack = sorted(list(set(tech_stack))) # Unique and sorted
 
-            description = f"<p>This is a '{difficulty}' level project designed to help you build an innovative '{project_title}'. "
+            description = f"<p>This is a '{difficulty}' level project designed to help you build an innovative solution: '{project_title}'. " # Use the refined project_title
             description += f"You will get hands-on experience with technologies such as {', '.join(tech_stack)}. "
             if user_profile.learning_goals:
                 description += f"This project directly addresses your learning goal: '{user_profile.learning_goals[:70]}...'.</p>"
@@ -198,7 +200,7 @@ class MockProjectLLMClient:
             learning_objectives = [
                 f"<li>Gain practical, hands-on experience with {', '.join(tech_stack)}.</li>",
                 f"<li>Develop a tangible project suitable for a portfolio, focusing on {preferences.project_type_focus or 'real-world problem solving and application development'}.</li>",
-                f"<li>Enhance problem-solving skills by building a project from concept to (simulated) deployment.</li>"
+                f"<li>Enhance your skills in {random.choice(['API design', 'data manipulation', 'frontend interaction', 'system architecture', 'algorithmic thinking'])}.</li>"
             ]
             if user_interests:
                 learning_objectives.append(f"<li>Deepen your understanding of concepts related to your interest in {random.choice(user_interests)}.</li>")
@@ -207,8 +209,8 @@ class MockProjectLLMClient:
 
 
             idea = {
-                "request_id": f"req_{uuid.uuid4().hex[:6]}",
-                "project_idea_id": f"idea_{idea_id_suffix}_{i+1}",
+                "request_id": f"req_{uuid.uuid4().hex[:6]}", # A unique ID for this specific generation request event
+                "project_idea_id": f"idea_{idea_id_suffix}_{i+1}", # A unique ID for this specific idea
                 "title": project_title,
                 "subtitle": f"A {difficulty} project focusing on {domain}, utilizing {tech_stack[0] if tech_stack else 'key technologies'} to address a real-world inspired scenario.",
                 "description_html": description,
@@ -216,28 +218,28 @@ class MockProjectLLMClient:
                 "estimated_duration": f"Approx. {estimated_hours} - {estimated_hours + random.randint(5,15)} hours",
                 "learning_objectives_html": learning_objectives,
                 "requirements_html": [
-                    f"<li>{user_profile.current_knowledge_level.get(tech_stack[0].split('/')[0].strip().split(' ')[0], 'Basic to intermediate understanding of') if tech_stack else 'Fundamental programming concepts'}.</li>",
-                    "<li>Access to a computer with internet and a suitable code editor/IDE.</li>",
-                    "<li>A proactive learning attitude and the ability to research solutions independently.</li>"
+                    f"<li>{user_profile.current_knowledge_level.get(tech_stack[0].split('/')[0].strip().split(' ')[0], 'Basic to intermediate understanding of') if tech_stack and user_profile.current_knowledge_level else 'Fundamental programming concepts are recommended'}.</li>", 
+                    "<li>Access to a computer with internet and a suitable code editor/IDE (e.g., VS Code).</li>",
+                    "<li>A proactive learning attitude and the ability to research solutions independently using documentation and online resources.</li>"
                 ],
                 "key_tasks": [
-                    {"task_id": 1, "description": "Project Initialization: Define clear project scope, choose specific tools/libraries from suggestions, set up version control (Git), and create a virtual environment.", "estimated_sub_duration": "2-4 hours"},
-                    {"task_id": 2, "description": f"Core Logic Implementation: Develop the primary backend functionalities using {tech_stack[0] if tech_stack else 'chosen primary language/framework'}. Focus on clean, modular code."},
-                    {"task_id": 3, "description": "Data Management (if applicable): Design schema, implement data storage (e.g., local files, simple DB, or mock API), and data processing logic."},
-                    {"task_id": 4, "description": "API/UI Development (if applicable): Build necessary API endpoints for interaction or a basic user interface to demonstrate functionality."},
-                    {"task_id": 5, "description": "Testing and Refinement: Write unit/integration tests for core components. Debug and refine based on test results and self-review."},
-                    {"task_id": 6, "description": "Documentation & Deployment Prep: Create a README with setup instructions, project overview, and (simulated) deployment steps."}
+                    {"task_id": 1, "description": "Project Planning & Environment Setup: Clearly define the project's scope based on this idea. Choose your specific tools/libraries from the suggestions. Initialize your project repository with Git and set up a dedicated virtual environment.", "estimated_sub_duration": "2-4 hours"},
+                    {"task_id": 2, "description": f"Core Logic Implementation: Develop the primary backend functionalities and algorithms using {tech_stack[0] if tech_stack else 'your chosen primary language/framework'}. Focus on creating clean, modular, and understandable code."},
+                    {"task_id": 3, "description": "Data Handling & Integration (if applicable): Design any necessary data schemas. Implement data sourcing (e.g., from a mock API, CSV files, or a simple database) and any required data transformation or cleaning logic."},
+                    {"task_id": 4, "description": "API/User Interface Development (if applicable): Build the necessary API endpoints for interaction if it's a backend project, or develop a basic user interface to demonstrate the project's functionality if it's a full-stack or frontend project."},
+                    {"task_id": 5, "description": "Testing and Refinement: Write unit or integration tests for core components to ensure correctness. Debug any issues and refine the project based on self-review and testing."},
+                    {"task_id": 6, "description": "Documentation & Deployment Preparation: Create a comprehensive README.md file with setup instructions, an overview of the project, and clear usage examples. Prepare (simulated) deployment steps or a brief explanation of how it could be deployed."}
                 ],
                 "suggested_technologies": tech_stack,
-                "personalization_rationale": " ".join(personalization_notes_list) if personalization_notes_list else f"A generally useful project to build skills in {tech_stack[0] if tech_stack else 'key areas of software development'}.",
+                "personalization_rationale": " ".join(personalization_notes_list),
                 "assessment_rubric_preview_html": [
-                    "<li>Successful Implementation of Core Functionality & Key Tasks (50%)</li>", 
-                    f"<li>Code Quality, Readability, and Adherence to Best Practices for {tech_stack[0] if tech_stack else 'Selected Technologies'} (30%)</li>",
-                    "<li>Project Documentation (README, Code Comments) and (Optional) Brief Presentation/Demo (20%)</li>"
+                    "<li>Successful Implementation of Core Functionality & All Key Tasks (50%)</li>", 
+                    f"<li>Code Quality, Readability, Organization, and Adherence to Best Practices for the Suggested Technologies (e.g., {tech_stack[0] if tech_stack else ''}) (30%)</li>",
+                    "<li>Project Documentation (Comprehensive README, Clear Code Comments) and (Optional but Recommended) Brief Video Presentation/Demo of the Working Project (20%)</li>"
                 ],
                 "real_world_application_examples": [
-                    f"The principles used in this project are common in {current_industry} for developing tools related to [example real-world task in that industry].",
-                    f"This project can serve as a strong foundation for a more complex system or a specialized tool, enhancing your portfolio for roles like a {user_profile.career_interest or 'Software Developer'}."
+                    f"The principles and technologies used in this project are directly applicable in the {current_industry} sector for developing tools related to [example real-world task relevant to the project domain and industry].",
+                    f"This project can serve as a strong foundational component for a more complex system or a specialized tool, significantly enhancing your portfolio for roles such as a {user_profile.career_interest or 'Software Developer/Engineer'}."
                 ]
             }
             generated_project_ideas.append(idea)
@@ -297,24 +299,16 @@ def construct_project_gen_prompt(
   "description_html": "string (detailed project description, 2-4 paragraphs, using <p> and <ul> for formatting. Explain what the project is about, its core challenge, and its value *to this specific user* considering their profile.)",
   "difficulty_level": "string (choose one: 'beginner', 'intermediate', 'advanced', matching user preference OR justifying if different based on their stated knowledge level and the project's complexity)",
   "estimated_duration": "string (e.g., '15-20 hours', 'Approx. 3 weeks part-time', aligning with user's time commitment if provided, otherwise a reasonable estimate for the scope)",
-  "learning_objectives_html": [
-    "string (HTML list item: e.g., '<li>Master asynchronous programming in Python, which is highly relevant for your interest in building scalable web services for the {user_profile.industry or 'tech'} sector.</li>')",
-    "string (HTML list item: e.g., '<li>Learn to integrate third-party APIs effectively, a key skill for a {user_profile.profession or 'developer'} and useful for your goal of {user_profile.learning_goals or 'building X'}.</li>')"
-    // ... 3-5 specific, measurable, achievable, relevant, time-bound (SMART-like) objectives
-  ],
-  "requirements_html": [
-    "string (HTML list item: e.g., '<li>{user_profile.current_knowledge_level.get("Python", "Basic Python proficiency")} (variables, data types, loops, functions). If 'Beginner', suggest starting with foundational concepts.</li>')",
-    "string (HTML list item: e.g., '<li>Familiarity with JSON data structures, which will be useful for your interest in {user_profile.areas_of_interest[0] if user_profile.areas_of_interest else 'API interaction'}.</li>')",
-    "string (HTML list item: e.g., '<li>Access to a computer with internet, a code editor (like VS Code), and Git for version control.</li>')"
-  ],
+  "learning_objectives_html": ["string (e.g., '<li>Master asynchronous programming in Python, which is highly relevant for your interest in building scalable web services for the {user_profile.industry or 'tech'} sector.</li>')", "string (e.g., '<li>Learn to integrate third-party APIs effectively, a key skill for a {user_profile.profession or 'developer'} and useful for your goal of {user_profile.learning_goals or 'building X'}.</li>')"],
+  "requirements_html": ["string (e.g., '<li>{user_profile.current_knowledge_level.get("Python", "Basic Python proficiency")} (variables, data types, loops, functions). If 'Beginner', suggest starting with foundational concepts.</li>')", "string (e.g., '<li>Familiarity with JSON data structures, which will be useful for your interest in {user_profile.areas_of_interest[0] if user_profile.areas_of_interest else 'API interaction'}.</li>')", "string (e.g., '<li>Access to a computer with internet, a code editor (like VS Code), and Git for version control.</li>')"],
   "target_audience_html": [ // Who is this project for, described in relation to the user
     "string (HTML list item: e.g., 'A {user_profile.profession or 'learner'} like you, aiming to strengthen their {user_profile.areas_of_interest[0] if user_profile.areas_of_interest else 'core development skills'} within the {user_profile.industry or 'chosen'} domain.')",
     "string (HTML list item: e.g., 'Individuals looking to build a compelling portfolio piece that demonstrates practical application of [key technology/skill from project].')"
   ],
   "key_tasks": [ // 3-6 clear, actionable, and somewhat sequential tasks
-    {"task_id": 1, "description": "string (e.g., 'Project Planning & Environment Setup: Clearly define the project scope based on your selected idea. Choose specific libraries from the suggested tech stack. Initialize your project repository with Git and set up a virtual environment.')", "estimated_sub_duration": "string (e.g., '1-3 hours')"},
-    {"task_id": 2, "description": "string (e.g., 'Core Feature Implementation - Part 1: Develop the primary backend logic for [main feature A] using {preferences.preferred_technologies[0] if preferences.preferred_technologies else 'Python'}. Focus on creating modular and testable functions/classes.')", "estimated_sub_duration": "string (e.g., '5-8 hours')"},
-    {"task_id": 3, "description": "string (e.g., 'Data Handling & Integration: Implement data sourcing (e.g., from a mock API, CSV, or a simple database schema if needed) and any necessary data transformation logic.')", "estimated_sub_duration": "string (e.g., '4-6 hours')"}
+    {"task_id": 1, "description": "string (e.g., 'Project Planning & Environment Setup: Clearly define the project scope based on this idea. Choose specific tools/libraries from the suggestions. Initialize your project repository with Git and set up a dedicated virtual environment.')", "estimated_sub_duration": "string (e.g., '1-3 hours')"},
+    {"task_id": 2, "description": "string (e.g., 'Core Logic Implementation - Part 1: Develop the primary backend functionalities and algorithms using {preferences.preferred_technologies[0] if preferences.preferred_technologies else 'Python'}. Focus on creating modular and testable functions/classes.')", "estimated_sub_duration": "string (e.g., '5-8 hours')"},
+    {"task_id": 3, "description": "string (e.g., 'Data Handling & Integration: Implement data sourcing (e.g., from a mock API, CSV, or a simple database schema if needed) and any necessary data transformation or cleaning logic.')", "estimated_sub_duration": "string (e.g., '4-6 hours')"}
     // ... more tasks covering UI (if any), testing, basic documentation.
   ],
   "suggested_technologies": [ // Be specific, include versions if important, and justify briefly if not in user's preferences
@@ -323,7 +317,7 @@ def construct_project_gen_prompt(
     "string (e.g., 'Pandas (if data manipulation is involved, essential for data tasks)')"
     // ... list other key frameworks, libraries, or tools.
   ],
-  "personalization_rationale": "string (CRUCIAL: 2-3 sentences explaining *precisely* why this project, its domain, and its technologies are an excellent match for *this specific user*. Reference their industry, profession, current knowledge levels (e.g., 'builds on your Intermediate Python'), areas of interest, and learning goals. Avoid generic statements. Make the connection explicit and compelling.)",
+  "personalization_rationale": "string (CRUCIAL: 2-3 sentences explaining *precisely* why this project, its domain, and its technologies are an excellent match for *this specific user*. Reference their industry, profession, current knowledge levels (e.g., 'builds on your Intermediate Python'), areas of interest, and learning goals. Be very specific in the connection.)",
   "potential_challenges": [ // 2-3 potential hurdles user might face
     "string (e.g., 'Debugging asynchronous code if using FastAPI/asyncio for the first time, requiring careful study of async concepts.')",
     "string (e.g., 'Finding or generating a suitable and diverse dataset if the project involves data analysis or ML.')",
@@ -335,12 +329,12 @@ def construct_project_gen_prompt(
     "string (HTML list item: e.g., '<li>Clear project documentation (README with setup, usage, and key design decisions) and (if applicable) a brief video presentation of the working project (20%)</li>')"
   ],
   "real_world_application_examples": [ // 1-2 examples connecting project to real world
-      "string (e.g., 'The data processing pipeline developed here is similar to those used in {user_profile.industry or 'many industries'} for ETL tasks and business intelligence.')",
-      "string (e.g., 'The API design principles learned can be directly applied to building microservices, a common pattern for roles like a {user_profile.career_interest or 'Backend Developer'}.')"
+      "string (e.g., 'This type of system is used by companies like [Example Company] for [their use case], relevant to your interest in {user_profile.industry or 'the field'}.')",
+      "string (e.g., 'The skills gained can be directly applied to roles such as {user_profile.career_interest or 'a relevant job title'}.')"
   ]
 }
 """
-    prompt += "\nIMPORTANT: Respond with a valid JSON list containing the specified number of project idea objects. Do not include any introductory or concluding text outside this JSON list. Each field must be populated appropriately. The personalization_rationale is key.\n"
+    prompt += "\nIMPORTANT: Ensure the entire response is a list of these valid JSON objects. Do not include any introductory or concluding text outside this JSON list structure. Each field must be populated appropriately. The personalization_rationale is key.\n"
     return prompt
 
 # --- API Endpoint ---
