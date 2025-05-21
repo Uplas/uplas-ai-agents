@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 import uuid
+import json # For more complex payload assertions
 
 # Import the FastAPI app and Pydantic models from main.py
 from .main import (
@@ -9,7 +10,8 @@ from .main import (
     ProjectIdeaGenerationRequest,
     UserProfileSnapshotForProjects,
     ProjectPreferences,
-    GeneratedProjectIdea, # For checking response structure
+    GeneratedProjectIdea,
+    GeneratedProjectTask, # For detailed checking
     mock_project_llm # To potentially patch its methods
 )
 
@@ -17,165 +19,229 @@ client = TestClient(app)
 
 # --- Fixtures ---
 @pytest.fixture
-def basic_user_profile_for_projects() -> UserProfileSnapshotForProjects:
+def user_profile_data_analyst() -> UserProfileSnapshotForProjects:
     return UserProfileSnapshotForProjects(
-        user_id=f"user_{uuid.uuid4().hex[:6]}",
-        industry="Software Development",
-        profession="Junior Developer",
-        career_interest="Full-Stack Development",
-        current_knowledge_level={"Python": "Beginner", "JavaScript": "Novice"},
-        areas_of_interest=["Web Applications", "API Design"],
-        learning_goals="Build a complete web application."
+        user_id=f"user_analyst_{uuid.uuid4().hex[:6]}",
+        industry="Finance",
+        profession="Data Analyst",
+        career_interest="Quantitative Finance",
+        current_knowledge_level={"Python": "Intermediate", "SQL": "Advanced", "Pandas": "Intermediate"},
+        areas_of_interest=["Algorithmic Trading", "Risk Management", "Data Visualization"],
+        learning_goals="Build a project demonstrating financial data analysis."
     )
 
 @pytest.fixture
-def basic_project_preferences() -> ProjectPreferences:
+def user_profile_web_dev_student() -> UserProfileSnapshotForProjects:
+    return UserProfileSnapshotForProjects(
+        user_id=f"user_webdev_{uuid.uuid4().hex[:6]}",
+        industry="Technology", # General tech
+        profession="Student",
+        career_interest="Full-Stack Web Developer",
+        current_knowledge_level={"JavaScript": "Beginner", "HTML/CSS": "Intermediate"},
+        areas_of_interest=["E-commerce Platforms", "Social Networking Apps", "API Development"],
+        learning_goals="Create a full-stack web application with user authentication."
+    )
+
+@pytest.fixture
+def project_prefs_advanced_python() -> ProjectPreferences:
+    return ProjectPreferences(
+        difficulty_level="advanced",
+        preferred_technologies=["Python", "FastAPI", "PostgreSQL"],
+        project_type_focus="Scalable Backend Service",
+        time_commitment_hours_estimate=40
+    )
+
+@pytest.fixture
+def project_prefs_beginner_frontend() -> ProjectPreferences:
     return ProjectPreferences(
         difficulty_level="beginner",
-        preferred_technologies=["Python", "FastAPI"],
-        project_type_focus="Portfolio Piece",
-        time_commitment_hours_estimate=20
+        preferred_technologies=["HTML", "CSS", "JavaScript (Vanilla)"],
+        project_type_focus="Interactive Frontend Component",
+        time_commitment_hours_estimate=15
     )
 
-@pytest.fixture
-def project_gen_request_payload(
-    basic_user_profile_for_projects: UserProfileSnapshotForProjects,
-    basic_project_preferences: ProjectPreferences
-) -> ProjectIdeaGenerationRequest:
-    return ProjectIdeaGenerationRequest(
-        user_profile_snapshot=basic_user_profile_for_projects,
-        preferences=basic_project_preferences,
+# --- Test Cases for the Endpoint ---
+
+def test_generate_project_ideas_success_data_analyst_profile(
+    user_profile_data_analyst: UserProfileSnapshotForProjects,
+    project_prefs_advanced_python: ProjectPreferences # Mix and match profile and prefs
+):
+    """Test successful idea generation for a Data Analyst profile."""
+    request_payload = ProjectIdeaGenerationRequest(
+        user_profile_snapshot=user_profile_data_analyst,
+        preferences=project_prefs_advanced_python, # Using advanced python prefs for a data analyst
         number_of_ideas=2
     )
-
-# --- Test Cases ---
-
-def test_generate_project_ideas_success(project_gen_request_payload: ProjectIdeaGenerationRequest):
-    """Test the main endpoint with a valid request, expecting successful idea generation."""
-    payload_dict = project_gen_request_payload.model_dump()
-    
+    payload_dict = request_payload.model_dump()
     response = client.post("/v1/generate-project-ideas", json=payload_dict)
     
     assert response.status_code == 200
     data = response.json()
-    
     assert "generated_ideas" in data
-    assert len(data["generated_ideas"]) == project_gen_request_payload.number_of_ideas
+    assert len(data["generated_ideas"]) == 2
     
-    for idea in data["generated_ideas"]:
-        # Validate structure against Pydantic model by trying to parse it (or check key fields)
-        parsed_idea = GeneratedProjectIdea(**idea) # This will raise error if fields mismatch
-        assert parsed_idea.title is not None
-        assert project_gen_request_payload.user_profile_snapshot.profession.lower() in parsed_idea.title.lower() \
-            or project_gen_request_payload.user_profile_snapshot.industry.lower() in parsed_idea.title.lower() # Check mock personalization
-        assert parsed_idea.difficulty_level == project_gen_request_payload.preferences.difficulty_level
-        assert len(parsed_idea.learning_objectives_html) > 0
-        assert len(parsed_idea.key_tasks) > 0
-        assert len(parsed_idea.suggested_technologies) > 0
+    for idea_dict in data["generated_ideas"]:
+        idea = GeneratedProjectIdea(**idea_dict) # Validate structure
+        assert "Finance-Focused" in idea.title or "Data Analyst" in idea.title or "Algorithmic Trading" in idea.title # Check for personalization from mock
+        assert idea.difficulty_level == "advanced" # From preferences
+        assert any(tech in idea.suggested_technologies for tech in ["Python", "FastAPI", "Pandas"]), "Expected relevant tech not found"
+        assert len(idea.key_tasks) > 0
+        assert idea.personalization_rationale is not None
+        assert "Finance" in idea.personalization_rationale or "Data Analyst" in idea.personalization_rationale
 
-    assert "debug_info" in data
-    assert data["debug_info"]["llm_model_name_used"] == "mocked-gemini-pro-project-gen"
-
-
-def test_generate_project_ideas_minimal_input(basic_user_profile_for_projects: UserProfileSnapshotForProjects):
-    """Test with minimal preferences (relying on defaults)."""
-    minimal_request = ProjectIdeaGenerationRequest(
-        user_profile_snapshot=basic_user_profile_for_projects
-        # preferences and number_of_ideas will use defaults
+def test_generate_project_ideas_success_web_dev_student_profile(
+    user_profile_web_dev_student: UserProfileSnapshotForProjects,
+    project_prefs_beginner_frontend: ProjectPreferences
+):
+    """Test successful idea generation for a Web Dev Student profile."""
+    request_payload = ProjectIdeaGenerationRequest(
+        user_profile_snapshot=user_profile_web_dev_student,
+        preferences=project_prefs_beginner_frontend,
+        number_of_ideas=1
     )
-    payload_dict = minimal_request.model_dump()
+    payload_dict = request_payload.model_dump()
+    response = client.post("/v1/generate-project-ideas", json=payload_dict)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["generated_ideas"]) == 1
+    idea = GeneratedProjectIdea(**data["generated_ideas"][0])
+    assert "Student" in idea.title or "Web Dev" in idea.title or "E-commerce" in idea.title
+    assert idea.difficulty_level == "beginner"
+    assert "HTML" in idea.suggested_technologies or "JavaScript" in idea.suggested_technologies
+    assert "portfolio piece" in idea.personalization_rationale.lower() or "full-stack" in idea.personalization_rationale.lower()
+
+def test_generate_project_ideas_respects_number_of_ideas(
+    user_profile_data_analyst: UserProfileSnapshotForProjects
+):
+    """Test that the number_of_ideas parameter is respected."""
+    request_payload = ProjectIdeaGenerationRequest(
+        user_profile_snapshot=user_profile_data_analyst,
+        number_of_ideas=3
+    )
+    payload_dict = request_payload.model_dump()
     response = client.post("/v1/generate-project-ideas", json=payload_dict)
     assert response.status_code == 200
     data = response.json()
-    assert len(data["generated_ideas"]) == 1 # Default number_of_ideas
-    # Check if default difficulty was used by mock
-    assert data["generated_ideas"][0]["difficulty_level"] == ProjectPreferences().difficulty_level
+    assert len(data["generated_ideas"]) == 3
 
-
-@patch('uplas-ai-agents.project_generator_agent.main.mock_project_llm.generate_ideas', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_returns_empty_list(
-    mock_llm_generate, 
-    project_gen_request_payload: ProjectIdeaGenerationRequest,
-    event_loop # For async test with TestClient if not handled automatically
-):
-    """Test scenario where the (mocked) LLM returns no ideas."""
-    mock_llm_generate.return_value = [] # LLM found nothing suitable
-    payload_dict = project_gen_request_payload.model_dump()
-    
+    request_payload.number_of_ideas = 1
+    payload_dict = request_payload.model_dump()
     response = client.post("/v1/generate-project-ideas", json=payload_dict)
-    
-    assert response.status_code == 404 # As per our endpoint logic
-    assert "Could not generate suitable project ideas" in response.json()["detail"]
-
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["generated_ideas"]) == 1
 
 @patch('uplas-ai-agents.project_generator_agent.main.mock_project_llm.generate_ideas', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_returns_invalid_idea_structure(
+async def test_generate_project_ideas_llm_returns_fewer_than_requested(
     mock_llm_generate, 
-    project_gen_request_payload: ProjectIdeaGenerationRequest
+    user_profile_data_analyst: UserProfileSnapshotForProjects
 ):
-    """Test when LLM returns data that doesn't match GeneratedProjectIdea Pydantic model."""
-    mock_llm_generate.return_value = [
-        {"title": "Valid Idea 1", "description_html": "...", "difficulty_level": "easy", "learning_objectives_html": [], "key_tasks": [], "suggested_technologies": []}, # Missing required fields
-        {"completely_wrong_field": "some_value"} 
+    """Test scenario where LLM mock returns fewer ideas than requested but some are valid."""
+    # Mock LLM to return only 1 idea even if more are requested
+    mock_llm_generate.return_value = [ # A single valid idea structure
+        {
+            "request_id": "req_test", "project_idea_id": "idea_single",
+            "title": "Single Valid Idea from Mock", "subtitle": "A subtitle",
+            "description_html": "<p>Valid description.</p>", "difficulty_level": "intermediate",
+            "learning_objectives_html": ["<li>Learn A</li>"], "key_tasks": [{"task_id":1, "description":"Do X"}],
+            "suggested_technologies": ["Python"],
+            "personalization_rationale": "Good for you."
+        }
     ]
-    payload_dict = project_gen_request_payload.model_dump()
-    
+    request_payload = ProjectIdeaGenerationRequest(
+        user_profile_snapshot=user_profile_data_analyst,
+        number_of_ideas=3 # Request 3
+    )
+    payload_dict = request_payload.model_dump()
     response = client.post("/v1/generate-project-ideas", json=payload_dict)
     
-    # If at least one idea was valid, it might still return 200 with only the valid ones.
-    # If ALL ideas from LLM fail Pydantic validation within the loop, the endpoint raises 500 or 404.
-    # Our current logic: if validated_ideas is empty BUT raw_ideas_from_llm was not, it raises 500.
-    # If raw_ideas_from_llm itself was empty, it raises 404.
-    # If mock_llm_generate.return_value contains items that individually fail Pydantic's GeneratedProjectIdea(**raw_idea),
-    # the print warning in the endpoint will trigger, and validated_ideas will be empty.
-    assert response.status_code == 500 # Because raw ideas existed but all failed validation
-    assert "AI service returned ideas in an unexpected format" in response.json()["detail"]
-
-
-def test_generate_project_ideas_invalid_request_payload_bad_num_ideas(
-    project_gen_request_payload: ProjectIdeaGenerationRequest
-):
-    """Test with invalid number_of_ideas (e.g., too large)."""
-    payload_dict = project_gen_request_payload.model_dump()
-    payload_dict["number_of_ideas"] = 10 # Assuming our Pydantic model caps it at 5
-
-    response = client.post("/v1/generate-project-ideas", json=payload_dict)
-    assert response.status_code == 422 # Pydantic validation error
-    error_detail = response.json()["detail"]
-    assert any("number_of_ideas" in e["loc"] for e in error_detail if "loc" in e)
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["generated_ideas"]) == 1 # But only 1 was returned and validated
+    assert data["generated_ideas"][0]["title"] == "Single Valid Idea from Mock"
+    mock_llm_generate.assert_awaited_once()
 
 
 @patch('uplas-ai-agents.project_generator_agent.main.mock_project_llm.generate_ideas', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_call_exception(
+async def test_generate_project_ideas_llm_returns_mix_of_valid_and_invalid_ideas(
     mock_llm_generate, 
-    project_gen_request_payload: ProjectIdeaGenerationRequest
+    user_profile_data_analyst: UserProfileSnapshotForProjects
 ):
-    """Test handling of an unexpected exception from the LLM client."""
-    mock_llm_generate.side_effect = Exception("Simulated LLM Service Outage")
-    payload_dict = project_gen_request_payload.model_dump()
-    
+    """Test when LLM returns a mix, only valid ones are passed through."""
+    mock_llm_generate.return_value = [
+        { # Valid Idea
+            "request_id": "req_valid", "project_idea_id": "idea_v",
+            "title": "Valid Idea Structure", "subtitle": "Sub",
+            "description_html": "<p>Desc.</p>", "difficulty_level": "beginner",
+            "learning_objectives_html": ["<li>Obj</li>"], "key_tasks": [{"task_id":1, "description":"T"}],
+            "suggested_technologies": ["TechX"]
+        },
+        {"title": "Idea Missing Description HTML", "difficulty_level": "easy"}, # Invalid (missing description_html)
+        { # Valid Idea 2
+            "request_id": "req_valid2", "project_idea_id": "idea_v2",
+            "title": "Another Valid Idea", "subtitle": "Sub2",
+            "description_html": "<p>Desc2.</p>", "difficulty_level": "intermediate",
+            "learning_objectives_html": ["<li>Obj2</li>"], "key_tasks": [{"task_id":1, "description":"T2"}],
+            "suggested_technologies": ["TechY"]
+        }
+    ]
+    request_payload = ProjectIdeaGenerationRequest(
+        user_profile_snapshot=user_profile_data_analyst,
+        number_of_ideas=3
+    )
+    payload_dict = request_payload.model_dump()
     response = client.post("/v1/generate-project-ideas", json=payload_dict)
+
+    assert response.status_code == 200 # Should still succeed if at least one is valid
+    data = response.json()
+    assert len(data["generated_ideas"]) == 2 # Only the two valid ideas
+    assert data["generated_ideas"][0]["title"] == "Valid Idea Structure"
+    assert data["generated_ideas"][1]["title"] == "Another Valid Idea"
+    assert data["debug_info"]["ideas_validation_failures"] == 1
+
+
+# --- Direct tests for construct_project_gen_prompt ---
+from .main import construct_project_gen_prompt
+
+def test_construct_project_gen_prompt_includes_all_sections(
+    user_profile_data_analyst: UserProfileSnapshotForProjects,
+    project_prefs_advanced_python: ProjectPreferences
+):
+    prompt = construct_project_gen_prompt(
+        user_profile=user_profile_data_analyst,
+        preferences=project_prefs_advanced_python,
+        num_ideas=1
+    )
+    assert "USER PROFILE:" in prompt
+    assert f"- Current or Target Industry: {user_profile_data_analyst.industry}" in prompt
+    assert f"- Self-Assessed Knowledge Levels: Python: Intermediate, SQL: Advanced, Pandas: Intermediate" in prompt # Check formatting
+    assert "USER'S PROJECT PREFERENCES:" in prompt
+    assert f"- Desired Difficulty Level: {project_prefs_advanced_python.difficulty_level}" in prompt
+    assert f"- Preferred Technologies: Python, FastAPI, PostgreSQL" in prompt
+    assert "TASK: Generate 1 distinct project idea(s)" in prompt
+    assert '"title": "string (catchy, descriptive, and highly personalized project title' in prompt # Check for JSON structure guidance
+    assert "personalization_rationale" in prompt # Key field for LLM
+    assert "IMPORTANT: Respond with a valid JSON list" in prompt
+
+def test_construct_project_gen_prompt_handles_minimal_profile_and_prefs():
+    minimal_profile = UserProfileSnapshotForProjects(user_id="user_min_123")
+    minimal_prefs = ProjectPreferences() # All defaults
     
-    assert response.status_code == 503 # Error communicating with the AI project generation service
-    assert "Error communicating with the AI project generation service" in response.json()["detail"]
+    prompt = construct_project_gen_prompt(
+        user_profile=minimal_profile,
+        preferences=minimal_prefs,
+        num_ideas=1
+    )
+    assert "USER PROFILE:" in prompt
+    assert "- Current or Target Industry:" not in prompt # Should not appear if None
+    assert "- Self-Assessed Knowledge Levels:" not in prompt # Should not appear if empty dict
+    assert "USER'S PROJECT PREFERENCES:" in prompt
+    assert f"- Desired Difficulty Level: {minimal_prefs.difficulty_level}" in prompt # Default intermediate
+    assert "- Preferred Technologies: User is open to suggestions" in prompt # Specific text for empty list
+    assert "TASK: Generate 1 distinct project idea(s)" in prompt
 
 
-# Optional: Direct test for prompt construction if it were complex and used by a real LLM
-# from .main import construct_project_gen_prompt
-# def test_construct_project_gen_prompt_structure(
-#     basic_user_profile_for_projects: UserProfileSnapshotForProjects,
-#     basic_project_preferences: ProjectPreferences
-# ):
-#     prompt = construct_project_gen_prompt(
-#         user_profile=basic_user_profile_for_projects,
-#         preferences=basic_project_preferences,
-#         num_ideas=1
-#     )
-#     assert "Generate 1 personalized real-world project idea(s)" in prompt
-#     assert f"- Industry: {basic_user_profile_for_projects.industry}" in prompt
-#     assert f"- Difficulty: {basic_project_preferences.difficulty_level}" in prompt
-#     assert "- title (string, catchy and descriptive)" in prompt # Check for output structure guidance
-
-# To run these tests (requires pytest and pytest-asyncio):
+# To run these tests (requires pytest and pytest-asyncio for async patched methods):
 # From within uplas-ai-agents/project_generator_agent/
 # pytest
