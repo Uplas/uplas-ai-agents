@@ -1,1 +1,36 @@
-
+{
+  "character_name": "susan",
+  "service_avatar_id": "susan_uplas_v2_premiumHD_XYZ",
+  "description": "Susan: A clear, articulate, and modern professional instructor.",
+  "default_voice_settings": {
+    "service_tts_engine": "google_cloud_tts_preferred",
+    "service_voice_id": "en-US-Studio-O",
+    "language_code": "en-US"
+  },
+  "attires": [
+    {
+      "name": "professional_blazer_blue",
+      "service_attire_id": "susan_attire_blazer_blue_01_XYZ",
+      "tags": ["formal", "presentation", "daily_professional"],
+      "thumbnail_local_ref": "susan_thumbnail_blazer_blue.jpg"
+    },
+    {
+      "name": "smart_casual_blouse_cream",
+      "service_attire_id": "susan_attire_blouse_cream_03_XYZ",
+      "tags": ["everyday", "tutorial", "friendly"],
+      "thumbnail_local_ref": "susan_thumbnail_blouse_cream.jpg"
+    },
+    {
+      "name": "conference_dress_charcoal",
+      "service_attire_id": "susan_attire_dress_charcoal_02_XYZ",
+      "tags": ["formal", "conference_speaker"],
+      "thumbnail_local_ref": "susan_thumbnail_dress_charcoal.jpg"
+    }
+  ],
+  "default_attire_name": "smart_casual_blouse_cream",
+  "supported_moods_or_styles_by_service": [
+    "neutral_professional",
+    "engaging_presenter",
+    "empathetic_explainer"
+  ]
+}
