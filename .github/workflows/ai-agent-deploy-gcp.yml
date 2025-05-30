@@ -1,122 +1,112 @@
-# .github/workflows/deploy-agent-to-cloud-run.yml (or adapt for ai-agent-deploy-gcp.yml)
+# .github/workflows/ai-agent-deploy-gcp.yml
 
-name: Deploy Agent to Google Cloud Run
+name: Deploy All Uplas AI Agents to Google Cloud Run
 
 on:
   push:
     branches:
-      - main # Or your deployment branch
-    paths:
-      # Trigger workflow if code changes in a specific agent's directory or shared libs
-      # You'll create one such workflow per agent, or a more complex one that handles all.
-      # Example for personalized_tutor_nlp_llm agent:
+      - main # Or your primary deployment branch
+    paths: # Trigger if any agent code, shared libs, or this workflow changes
       - 'personalized_tutor_nlp_llm/**'
+      - 'tts_agent/**'
+      - 'ttv_agent/**'
+      - 'project_generator_agent/**'
       - 'shared_ai_libs/**'
-      # Add .github/workflows path to allow changes to the workflow itself to trigger it
-      - '.github/workflows/deploy-agent-to-cloud-run.yml' # Or the name of this file
+      - '.github/workflows/ai-agent-deploy-gcp.yml'
   workflow_dispatch: # Allows manual triggering
 
 env:
-  # GCP Settings - Use GitHub Secrets for sensitive values
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GCP_ARTIFACT_REGISTRY_REPOSITORY: 'uplas-ai-agents' # Name of your Artifact Registry repo
+  GCP_ARTIFACT_REGISTRY_REPOSITORY: 'uplas-ai-agents' # Your Artifact Registry repo name
   GCP_REGION: 'us-central1' # e.g., us-central1, europe-west1
 
-  # Agent-Specific Settings - These should be configured per agent workflow
-  # Option 1: Define them here directly (if creating one workflow file per agent)
-  AGENT_NAME: 'personalized-tutor-nlp-llm' # Cloud Run service name (lowercase, hyphens)
-  AGENT_DIRECTORY: 'personalized_tutor_nlp_llm' # Directory of the agent in the repo
-  # AGENT_PORT: '8001' # The internal port your agent's Docker container listens on (Uvicorn default is often 8000, but we use $PORT in Dockerfile)
-
-  # Option 2: Use matrix strategy if one workflow handles multiple agents (more complex)
-
 jobs:
-  build-and-deploy:
-    name: Build and Deploy ${{ env.AGENT_NAME }}
+  build-and-deploy-agents:
+    name: Build and Deploy ${{ matrix.agent.name }}
     runs-on: ubuntu-latest
     permissions:
       contents: 'read'
       id-token: 'write' # Required for Workload Identity Federation
+
+    strategy:
+      fail-fast: false # Allows other matrix jobs to continue if one fails
+      matrix:
+        agent:
+          - name: 'personalized-tutor-nlp-llm'
+            directory: 'personalized_tutor_nlp_llm'
+            env_vars_config: | # Agent-specific environment variables
+              GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}
+              GCP_LOCATION=${{ env.GCP_REGION }}
+              LLM_MODEL_NAME=gemini-1.5-flash-001 # Or from secrets.TUTOR_LLM_MODEL
+          - name: 'tts-agent'
+            directory: 'tts_agent'
+            env_vars_config: |
+              GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}
+              TTS_AUDIO_GCS_BUCKET_NAME=${{ secrets.TTS_AUDIO_GCS_BUCKET_NAME }}
+          - name: 'ttv-agent'
+            directory: 'ttv_agent'
+            env_vars_config: |
+              GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}
+              TTV_GCS_BUCKET_NAME=${{ secrets.TTV_GCS_BUCKET_NAME }}
+              DJANGO_TTV_CALLBACK_URL=${{ secrets.DJANGO_TTV_CALLBACK_URL }}
+              AI_TUTOR_AGENT_URL=https://personalized-tutor-nlp-llm-${{ secrets.GCP_URL_SUFFIX }}.a.run.app # Example URL structure
+              TTS_AGENT_URL=https://tts-agent-${{ secrets.GCP_URL_SUFFIX }}.a.run.app # Example URL structure
+              THIRD_PARTY_AVATAR_API_KEY=${{ secrets.THIRD_PARTY_AVATAR_API_KEY }}
+              THIRD_PARTY_AVATAR_BASE_URL=${{ secrets.THIRD_PARTY_AVATAR_BASE_URL }}
+          - name: 'project-generator-agent'
+            directory: 'project_generator_agent'
+            env_vars_config: |
+              GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}
+              GCP_LOCATION=${{ env.GCP_REGION }}
+              PROJECT_LLM_MODEL_NAME=gemini-1.5-flash-001 # Or from secrets.PROJECT_LLM_MODEL
+              ASSESSMENT_LLM_MODEL_NAME=gemini-1.5-flash-001 # Or from secrets.ASSESSMENT_LLM_MODEL
+              AI_TUTOR_AGENT_URL=https://personalized-tutor-nlp-llm-${{ secrets.GCP_URL_SUFFIX }}.a.run.app # Example URL structure
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
+        id: auth
         uses: 'google-github-actions/auth@v2'
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }} # e.g., projects/123/locations/global/workloadIdentityPools/my-pool/providers/my-provider
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }} # e.g., my-service-account@my-project.iam.gserviceaccount.com
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: 'google-github-actions/setup-gcloud@v2'
-
-      # (Optional) If you need to copy shared_ai_libs into the agent directory before build
-      # This assumes the Docker build context will be the AGENT_DIRECTORY
-      # - name: Prepare shared libraries for Docker build
-      #   run: |
-      #     echo "Copying shared_ai_libs to ${{ env.AGENT_DIRECTORY }}/"
-      #     # Create shared_ai_libs within agent dir if it doesn't exist, to avoid copy errors
-      #     mkdir -p ${{ env.AGENT_DIRECTORY }}/uplas_ai_agents/shared_ai_libs
-      #     # Copy contents of shared_ai_libs into the structure expected by the agent's import
-      #     # This assumes the agent imports like: from uplas_ai_agents.shared_ai_libs import ...
-      #     # Adjust paths as necessary.
-      #     cp -r shared_ai_libs/* ${{ env.AGENT_DIRECTORY }}/uplas_ai_agents/shared_ai_libs/
-      #     # You might also need to create an __init__.py in ${{ env.AGENT_DIRECTORY }}/uplas_ai_agents/
-      #     touch ${{ env.AGENT_DIRECTORY }}/uplas_ai_agents/__init__.py
-
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build and Push Docker Image to Artifact Registry
+        id: build-image
         uses: docker/build-push-action@v5
         with:
-          context: ./${{ env.AGENT_DIRECTORY }} # Build context is the agent's directory
-          # If building from root to include shared_ai_libs easily:
-          # context: .
-          # file: ./${{ env.AGENT_DIRECTORY }}/Dockerfile
+          context: . # Build context is the repository root
+          file: ./${{ matrix.agent.directory }}/Dockerfile # Path to the agent's Dockerfile
           push: true
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/${{ env.AGENT_NAME }}:${{ github.sha }}
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/${{ matrix.agent.name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Deploy to Google Cloud Run
+        id: deploy
         uses: 'google-github-actions/deploy-cloudrun@v2'
         with:
-          service: ${{ env.AGENT_NAME }}
-          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/${{ env.AGENT_NAME }}:${{ github.sha }}
+          service: ${{ matrix.agent.name }}
+          image: ${{ steps.build-image.outputs.digest }} # Use the pushed image digest
           region: ${{ env.GCP_REGION }}
-          # platform: 'managed' # Default
-          # allow_unauthenticated: true # Set to true if your service needs to be public, otherwise remove for IAM-controlled access
-          env_vars: | # Add agent-specific environment variables here
-            GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}
-            GCP_LOCATION=${{ env.GCP_REGION }}
-            # Example for AI Tutor Agent:
-            LLM_MODEL_NAME=gemini-1.5-flash-001
-            # Example for TTS Agent:
-            # TTS_AUDIO_GCS_BUCKET_NAME=your-tts-bucket
-            # Example for TTV Agent:
-            # AI_TUTOR_AGENT_URL=https://ai-tutor-service-xyz-uc.a.run.app
-            # TTS_AGENT_URL=https://tts-agent-service-xyz-uc.a.run.app
-            # DJANGO_TTV_CALLBACK_URL=${{ secrets.DJANGO_TTV_CALLBACK_URL }}
-            # THIRD_PARTY_AVATAR_API_KEY=${{ secrets.THIRD_PARTY_AVATAR_API_KEY }}
-            # THIRD_PARTY_AVATAR_BASE_URL=${{ secrets.THIRD_PARTY_AVATAR_BASE_URL }}
-            # Example for Project Generator Agent:
-            # PROJECT_LLM_MODEL_NAME=gemini-1.5-flash-001
-            # ASSESSMENT_LLM_MODEL_NAME=gemini-1.5-flash-001
-            # AI_TUTOR_AGENT_URL=https://ai-tutor-service-xyz-uc.a.run.app
-          # secrets: # For mounting secrets from Secret Manager
-            # EXAMPLE_SECRET=YOUR_SECRET_NAME:latest # Mounts secret YOUR_SECRET_NAME as env var EXAMPLE_SECRET
-          # service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }} # Cloud Run service identity (if different from deployer)
-          # vpc_connector: 'projects/YOUR_PROJECT/locations/YOUR_REGION/connectors/YOUR_CONNECTOR' # If needed
-          # cpu: 1 # Number of vCPUs
-          # memory: '512Mi' # Memory allocation
-          # concurrency: 80 # Max concurrent requests per instance
-          # min_instances: 0 # For scaling to zero
-          # max_instances: 2 # Max instances for scaling
+          # allow_unauthenticated: true # Uncomment if public access is needed, otherwise IAM controls access
+          env_vars: ${{ matrix.agent.env_vars_config }}
+          # Add other Cloud Run configurations as needed:
+          # memory: '512Mi'
+          # cpu: 1
+          # min_instances: 0 # for cost saving
+          # max_instances: 3
+          # concurrency: 80
+          # service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL_FOR_RUNTIME }} # Optional: if different from deployer
 
-    outputs:
-      service_url: ${{ steps.deploy.outputs.url }} # 'deploy' is the default id for deploy-cloudrun step
-
+      - name: Output Cloud Run Service URL
+        run: echo "Deployed ${{ matrix.agent.name }} to ${{ steps.deploy.outputs.url }}"
 
