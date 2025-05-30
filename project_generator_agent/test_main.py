@@ -1,26 +1,38 @@
+# uplas-ai-agents/project_generator_agent/test_main.py
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock # AsyncMock for async methods called by endpoint
+from unittest.mock import patch, AsyncMock, MagicMock, ANY
+import os
 import uuid
-import json # For more complex payload assertions if needed
+import json
+import httpx # For mocking calls to AI Tutor
 
 # Import the FastAPI app and Pydantic models from main.py
-# Ensure this path is correct based on your project structure
-# If test_main.py is in the same directory as main.py:
 from .main import (
     app,
     ProjectIdeaGenerationRequest,
     UserProfileSnapshotForProjects,
     ProjectPreferences,
-    GeneratedProjectIdea,
-    GeneratedProjectTask, # For detailed checking
-    MOCKED_PROJECT_LLM_NAME, # Import to check in debug info
-    mock_project_llm # To potentially patch its methods if needed for very specific scenarios
+    GeneratedProjectIdea, # For constructing mock LLM responses
+    GeneratedProjectTask,
+    ProjectAssessmentRequest,
+    ProjectSubmissionDetails,
+    ProjectAssessmentResult,
+    ASSESSMENT_PASS_THRESHOLD,
+    DEFAULT_LANGUAGE
+    # project_idea_llm and assessment_llm will be patched
 )
+
+# Set environment variables for testing
+os.environ["GCP_PROJECT_ID"] = "test-gcp-project-id"
+os.environ["GCP_LOCATION"] = "test-gcp-location"
+os.environ["PROJECT_LLM_MODEL_NAME"] = "test-project-gemini-model"
+os.environ["ASSESSMENT_LLM_MODEL_NAME"] = "test-assessment-gemini-model"
+os.environ["AI_TUTOR_AGENT_URL"] = "http://mock-ai-tutor-agent.com"
 
 client = TestClient(app)
 
-# --- Fixtures ---
+# --- Fixtures for Project Idea Generation ---
 @pytest.fixture
 def user_profile_data_analyst() -> UserProfileSnapshotForProjects:
     return UserProfileSnapshotForProjects(
@@ -28,21 +40,10 @@ def user_profile_data_analyst() -> UserProfileSnapshotForProjects:
         industry="Finance",
         profession="Data Analyst",
         career_interest="Quantitative Finance",
-        current_knowledge_level={"Python": "Intermediate", "SQL": "Advanced", "Pandas": "Intermediate"},
-        areas_of_interest=["Algorithmic Trading", "Risk Management", "Data Visualization"],
-        learning_goals="Build a project demonstrating financial data analysis."
-    )
-
-@pytest.fixture
-def user_profile_web_dev_student() -> UserProfileSnapshotForProjects:
-    return UserProfileSnapshotForProjects(
-        user_id=f"user_webdev_{uuid.uuid4().hex[:6]}",
-        industry="Technology", # General tech
-        profession="Student",
-        career_interest="Full-Stack Web Developer",
-        current_knowledge_level={"JavaScript": "Beginner", "HTML/CSS": "Intermediate", "Python": "Novice"},
-        areas_of_interest=["E-commerce Platforms", "Social Networking Apps", "API Development"],
-        learning_goals="Create a full-stack web application with user authentication."
+        current_knowledge_level={"Python": "Intermediate", "SQL": "Advanced"},
+        areas_of_interest=["Algorithmic Trading", "Risk Management"],
+        learning_goals="Build a project demonstrating financial data analysis.",
+        preferred_tutor_persona="Direct and informative"
     )
 
 @pytest.fixture
@@ -55,237 +56,287 @@ def project_prefs_advanced_python() -> ProjectPreferences:
     )
 
 @pytest.fixture
-def project_prefs_beginner_frontend() -> ProjectPreferences:
-    return ProjectPreferences(
-        difficulty_level="beginner",
-        preferred_technologies=["HTML", "CSS", "JavaScript (Vanilla)"],
-        project_type_focus="Interactive Frontend Component",
-        time_commitment_hours_estimate=15
+def project_gen_request_payload_dict(
+    user_profile_data_analyst: UserProfileSnapshotForProjects,
+    project_prefs_advanced_python: ProjectPreferences
+) -> Dict:
+    return {
+        "user_profile_snapshot": user_profile_data_analyst.model_dump(),
+        "preferences": project_prefs_advanced_python.model_dump(),
+        "number_of_ideas": 1,
+        "language_code": "en-US"
+    }
+
+@pytest.fixture
+def mock_successful_project_idea_llm_response_text() -> str:
+    # LLM is expected to return a JSON string which is a list of project ideas
+    ideas = [
+        GeneratedProjectIdea(
+            title="Personalized Stock Portfolio Analyzer",
+            description_html="<p>Analyze stock performance and build a personalized dashboard.</p>",
+            difficulty_level="advanced",
+            learning_objectives_html=["<li>Master FastAPI</li>", "<li>Understand financial APIs</li>"],
+            key_tasks=[GeneratedProjectTask(task_id=1, description="Setup FastAPI project.")],
+            suggested_technologies=["Python", "FastAPI", "AlphaVantage API"],
+            assessment_rubric_preview_html=["<li>API Integration: 50%</li>"],
+            language_code="en-US"
+        ).model_dump() # Convert Pydantic model to dict for JSON serialization
+    ]
+    return json.dumps(ideas)
+
+
+# --- Fixtures for Project Assessment ---
+@pytest.fixture
+def sample_generated_project_idea() -> GeneratedProjectIdea:
+    return GeneratedProjectIdea(
+        project_idea_id="proj_idea_sample_123",
+        title="Eco-Friendly Route Planner API",
+        description_html="<p>Develop an API that suggests the most eco-friendly routes.</p>",
+        difficulty_level="intermediate",
+        learning_objectives_html=["<li>Learn API design.</li>", "<li>Work with geospatial data.</li>"],
+        key_tasks=[
+            GeneratedProjectTask(task_id=1, description="Design API endpoints."),
+            GeneratedProjectTask(task_id=2, description="Implement routing algorithm.")
+        ],
+        suggested_technologies=["Python", "FastAPI", "GeoPy"],
+        assessment_rubric_preview_html=["<li>Functionality: 60%</li>", "<li>Code Quality: 20%</li>", "<li>API Design: 20%</li>"],
+        language_code="en-US"
     )
 
 @pytest.fixture
-def project_gen_request_payload_data_analyst( # More specific fixture name
-    user_profile_data_analyst: UserProfileSnapshotForProjects,
-    project_prefs_advanced_python: ProjectPreferences
-) -> ProjectIdeaGenerationRequest:
-    return ProjectIdeaGenerationRequest(
-        user_profile_snapshot=user_profile_data_analyst,
-        preferences=project_prefs_advanced_python,
-        number_of_ideas=2
+def project_submission_details_pass() -> ProjectSubmissionDetails:
+    return ProjectSubmissionDetails(
+        github_url="https://github.com/testuser/eco-planner",
+        textual_summary="Implemented all core features and added unit tests."
     )
 
-# --- Test Cases for the Endpoint ---
+@pytest.fixture
+def project_submission_details_fail() -> ProjectSubmissionDetails:
+    return ProjectSubmissionDetails(
+        textual_summary="Only implemented the basic API design. Struggled with the routing algorithm."
+    )
 
-def test_generate_project_ideas_success_data_analyst_profile(
-    project_gen_request_payload_data_analyst: ProjectIdeaGenerationRequest
+@pytest.fixture
+def project_assessment_request_payload_pass_dict(
+    user_profile_data_analyst: UserProfileSnapshotForProjects, # Re-use for user_id
+    sample_generated_project_idea: GeneratedProjectIdea,
+    project_submission_details_pass: ProjectSubmissionDetails
+) -> Dict:
+    return {
+        "user_id": user_profile_data_analyst.user_id,
+        "project_idea": sample_generated_project_idea.model_dump(),
+        "submission": project_submission_details_pass.model_dump(),
+        "language_code": "en-US"
+    }
+
+@pytest.fixture
+def project_assessment_request_payload_fail_dict(
+    user_profile_data_analyst: UserProfileSnapshotForProjects,
+    sample_generated_project_idea: GeneratedProjectIdea,
+    project_submission_details_fail: ProjectSubmissionDetails
+) -> Dict:
+    return {
+        "user_id": user_profile_data_analyst.user_id,
+        "project_idea": sample_generated_project_idea.model_dump(),
+        "submission": project_submission_details_fail.model_dump(),
+        "language_code": "en-US"
+    }
+
+@pytest.fixture
+def mock_successful_assessment_llm_response_text_pass() -> str:
+    result = ProjectAssessmentResult(
+        project_idea_id="proj_idea_sample_123",
+        user_id="user_analyst_test",
+        score=85.0,
+        is_passed=True,
+        feedback_summary_html="<p>Great job! Excellent implementation of the core features.</p>",
+        detailed_feedback_points_html=["<li>API design is solid.</li>", "<li>Routing logic is efficient.</li>"],
+        areas_for_improvement_html=["<li>Consider adding more edge case handling for geo-queries.</li>"],
+        positive_points_html=["<li>Clean code and good use of FastAPI.</li>"],
+        language_code="en-US"
+    ).model_dump()
+    return json.dumps(result)
+
+@pytest.fixture
+def mock_successful_assessment_llm_response_text_fail() -> str:
+    result = ProjectAssessmentResult(
+        project_idea_id="proj_idea_sample_123",
+        user_id="user_analyst_test",
+        score=60.0,
+        is_passed=False, # Based on score < ASSESSMENT_PASS_THRESHOLD
+        feedback_summary_html="<p>Good start, but the core routing algorithm needs more work.</p>",
+        detailed_feedback_points_html=["<li>API endpoints are well-defined.</li>"],
+        areas_for_improvement_html=["<li>The routing logic is incomplete.</li>", "<li>Error handling is missing.</li>"],
+        positive_points_html=["<li>Good understanding of the project requirements shown in the API design.</li>"],
+        language_code="en-US"
+    ).model_dump()
+    return json.dumps(result)
+
+# --- Test Cases for Project Idea Generation ---
+
+@patch('uplas_ai_agents.project_generator_agent.main.project_idea_llm.generate_structured_response', new_callable=AsyncMock)
+async def test_generate_project_ideas_success(
+    mock_llm_gen_ideas: AsyncMock,
+    project_gen_request_payload_dict: Dict,
+    mock_successful_project_idea_llm_response_text: str
 ):
-    """Test successful idea generation for a Data Analyst profile with specific preferences."""
-    payload_dict = project_gen_request_payload_data_analyst.model_dump()
-    
-    response = client.post("/v1/generate-project-ideas", json=payload_dict)
-    
+    """Test successful project idea generation."""
+    mock_llm_gen_ideas.return_value = {
+        "response_text": mock_successful_project_idea_llm_response_text,
+        "prompt_token_count": 100,
+        "response_token_count": 300
+    }
+
+    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
+
     assert response.status_code == 200
     data = response.json()
-    
     assert "generated_ideas" in data
-    assert len(data["generated_ideas"]) == project_gen_request_payload_data_analyst.number_of_ideas
-    
-    for idea_dict in data["generated_ideas"]:
-        idea = GeneratedProjectIdea(**idea_dict) # Validate structure by parsing
-        assert idea.title is not None
-        # Check for personalization cues based on the refined mock LLM
-        # These checks are examples and depend on the specifics of your refined MockProjectLLMClient's logic
-        assert project_gen_request_payload_data_analyst.user_profile_snapshot.industry.lower() in idea.title.lower() or \
-               project_gen_request_payload_data_analyst.user_profile_snapshot.profession.lower() in idea.title.lower() or \
-               any(interest.lower() in idea.title.lower() for interest in project_gen_request_payload_data_analyst.user_profile_snapshot.areas_of_interest or [])
-        assert idea.difficulty_level == project_gen_request_payload_data_analyst.preferences.difficulty_level
-        assert len(idea.learning_objectives_html) >= 2 # Refined mock generates more
-        assert len(idea.key_tasks) >= 3 # Refined mock generates more tasks
-        assert any(tech.lower() in map(str.lower, idea.suggested_technologies) for tech in project_gen_request_payload_data_analyst.preferences.preferred_technologies), "Expected preferred tech not found"
-        assert idea.personalization_rationale is not None and len(idea.personalization_rationale) > 10
-        assert project_gen_request_payload_data_analyst.user_profile_snapshot.industry.lower() in idea.personalization_rationale.lower() or \
-               project_gen_request_payload_data_analyst.user_profile_snapshot.profession.lower() in idea.personalization_rationale.lower() or \
-               any(interest.lower() in idea.personalization_rationale.lower() for interest in project_gen_request_payload_data_analyst.user_profile_snapshot.areas_of_interest or [])
-
+    assert len(data["generated_ideas"]) == 1
+    idea = data["generated_ideas"][0]
+    assert idea["title"] == "Personalized Stock Portfolio Analyzer"
+    assert idea["language_code"] == project_gen_request_payload_dict["language_code"]
     assert "debug_info" in data
-    assert data["debug_info"]["llm_model_name_used"] == MOCKED_PROJECT_LLM_NAME
-    assert data["debug_info"]["num_ideas_generated_valid"] == project_gen_request_payload_data_analyst.number_of_ideas
+    assert data["debug_info"]["llm_model_name_used"] == os.getenv("PROJECT_LLM_MODEL_NAME")
+
+    mock_llm_gen_ideas.assert_awaited_once()
+    call_args = mock_llm_gen_ideas.call_args[1]
+    assert "system_prompt" in call_args
+    assert project_gen_request_payload_dict["language_code"] in call_args["system_prompt"]
+    assert "user_query_or_context" in call_args
+    assert project_gen_request_payload_dict["user_profile_snapshot"]["industry"] in call_args["user_query_or_context"]
+    assert "response_schema" in call_args # Check that schema is being passed for JSON mode
+    assert call_args["response_schema"]["type"] == "array"
+    assert call_args["response_schema"]["items"]["title"] == GeneratedProjectIdea.model_json_schema()["title"]
 
 
-def test_generate_project_ideas_success_web_dev_student_profile(
-    user_profile_web_dev_student: UserProfileSnapshotForProjects,
-    project_prefs_beginner_frontend: ProjectPreferences
+@patch('uplas_ai_agents.project_generator_agent.main.project_idea_llm.generate_structured_response', new_callable=AsyncMock)
+async def test_generate_project_ideas_llm_returns_invalid_json(
+    mock_llm_gen_ideas: AsyncMock,
+    project_gen_request_payload_dict: Dict
 ):
-    """Test successful idea generation for a Web Dev Student profile with beginner preferences."""
-    request_payload = ProjectIdeaGenerationRequest(
-        user_profile_snapshot=user_profile_web_dev_student,
-        preferences=project_prefs_beginner_frontend,
-        number_of_ideas=1
-    )
-    payload_dict = request_payload.model_dump()
-    response = client.post("/v1/generate-project-ideas", json=payload_dict)
+    """Test when LLM returns a non-JSON string or malformed JSON for ideas."""
+    mock_llm_gen_ideas.return_value = {"response_text": "This is not JSON, just plain text."}
+    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
+    assert response.status_code == 500
+    assert "llm returned invalid json for project ideas" in response.json()["detail"].lower()
+
+    mock_llm_gen_ideas.return_value = {"response_text": "[{\"title\": \"Missing fields...\"}]"} # Malformed based on Pydantic
+    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
+    assert response.status_code == 404 # Because validation will fail for all ideas
+    assert "could not generate suitable project ideas after validation" in response.json()["detail"].lower()
+
+
+@patch('uplas_ai_agents.project_generator_agent.main.project_idea_llm.generate_structured_response', new_callable=AsyncMock)
+async def test_generate_project_ideas_llm_call_exception(
+    mock_llm_gen_ideas: AsyncMock,
+    project_gen_request_payload_dict: Dict
+):
+    """Test handling of an unexpected exception from the LLM client call for ideas."""
+    mock_llm_gen_ideas.side_effect = Exception("Simulated LLM Network Outage")
+    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
+    assert response.status_code == 503
+    assert "error generating project ideas" in response.json()["detail"].lower()
+
+# --- Test Cases for Project Assessment ---
+
+@patch('uplas_ai_agents.project_generator_agent.main.assessment_llm.generate_structured_response', new_callable=AsyncMock)
+@patch('uplas_ai_agents.project_generator_agent.main.trigger_ai_tutor_for_failed_assessment', new_callable=AsyncMock) # Mock the trigger function
+async def test_assess_project_success_pass(
+    mock_trigger_tutor: AsyncMock,
+    mock_llm_assess: AsyncMock,
+    project_assessment_request_payload_pass_dict: Dict,
+    mock_successful_assessment_llm_response_text_pass: str
+):
+    """Test successful project assessment where user passes."""
+    mock_llm_assess.return_value = {
+        "response_text": mock_successful_assessment_llm_response_text_pass,
+        "prompt_token_count": 200,
+        "response_token_count": 150
+    }
+
+    response = client.post("/v1/assess-project", json=project_assessment_request_payload_pass_dict)
 
     assert response.status_code == 200
     data = response.json()
-    assert len(data["generated_ideas"]) == 1
-    idea = GeneratedProjectIdea(**data["generated_ideas"][0])
-    assert "student" in idea.title.lower() or "web" in idea.title.lower() or \
-           any(interest.lower() in idea.title.lower() for interest in user_profile_web_dev_student.areas_of_interest or [])
-    assert idea.difficulty_level == "beginner"
-    assert any(tech.lower() in map(str.lower, idea.suggested_technologies) for tech in project_prefs_beginner_frontend.preferred_technologies), "Expected preferred frontend tech not found"
-    assert "portfolio piece" in idea.personalization_rationale.lower() or "full-stack" in idea.personalization_rationale.lower() or \
-           any(interest.lower() in idea.personalization_rationale.lower() for interest in user_profile_web_dev_student.areas_of_interest or [])
+    assert "assessment_result" in data
+    result = data["assessment_result"]
+    assert result["score"] == 85.0
+    assert result["is_passed"] is True
+    assert result["language_code"] == project_assessment_request_payload_pass_dict["language_code"]
+    assert result["tutor_session_triggered"] is False # Should not be triggered for a pass
+    assert "debug_info" in data
+    assert data["debug_info"]["llm_model_name_used"] == os.getenv("ASSESSMENT_LLM_MODEL_NAME")
 
-def test_generate_project_ideas_respects_number_of_ideas_param(
-    user_profile_data_analyst: UserProfileSnapshotForProjects
+    mock_llm_assess.assert_awaited_once()
+    call_args = mock_llm_assess.call_args[1]
+    assert "system_prompt" in call_args
+    assert project_assessment_request_payload_pass_dict["language_code"] in call_args["system_prompt"]
+    assert "user_query_or_context" in call_args
+    assert project_assessment_request_payload_pass_dict["project_idea"]["title"] in call_args["user_query_or_context"]
+    assert project_assessment_request_payload_pass_dict["submission"]["github_url"] in call_args["user_query_or_context"]
+    assert "response_schema" in call_args
+    assert call_args["response_schema"]["title"] == ProjectAssessmentResult.model_json_schema()["title"]
+    
+    mock_trigger_tutor.assert_not_awaited() # Ensure tutor was NOT called
+
+
+@patch('uplas_ai_agents.project_generator_agent.main.assessment_llm.generate_structured_response', new_callable=AsyncMock)
+@patch('uplas_ai_agents.project_generator_agent.main.trigger_ai_tutor_for_failed_assessment', new_callable=AsyncMock)
+async def test_assess_project_success_fail_and_trigger_tutor(
+    mock_trigger_tutor: AsyncMock,
+    mock_llm_assess: AsyncMock,
+    project_assessment_request_payload_fail_dict: Dict, # Using the fail payload
+    mock_successful_assessment_llm_response_text_fail: str,
+    user_profile_data_analyst: UserProfileSnapshotForProjects # To verify tutor call payload
 ):
-    """Test that the number_of_ideas parameter is respected by the mock (up to its template limit)."""
-    # The refined mock LLM client has a list of base_project_templates.
-    # The number of returned ideas will be min(num_ideas_requested, len(base_project_templates)).
-    # Let's assume base_project_templates has at least 3 items for this test.
+    """Test successful project assessment where user fails, and AI Tutor is triggered."""
+    mock_llm_assess.return_value = {
+        "response_text": mock_successful_assessment_llm_response_text_fail
+    }
+    mock_trigger_tutor.return_value = True # Simulate successful tutor trigger
+
+    response = client.post("/v1/assess-project", json=project_assessment_request_payload_fail_dict)
+
+    assert response.status_code == 200
+    data = response.json()
+    result = data["assessment_result"]
+    assert result["score"] == 60.0
+    # is_passed is determined by the LLM's output in this mock, but should align with score
+    # In main.py, is_passed is directly from LLM. Let's assume LLM sets it correctly.
+    assert result["is_passed"] is False
+    assert result["tutor_session_triggered"] is True
+
+    mock_llm_assess.assert_awaited_once()
+    mock_trigger_tutor.assert_awaited_once()
     
-    for num_req in [1, 2, 3]: # Assuming our refined mock can generate up to 3 distinct ideas
-        request_payload = ProjectIdeaGenerationRequest(
-            user_profile_snapshot=user_profile_data_analyst,
-            number_of_ideas=num_req
-        )
-        payload_dict = request_payload.model_dump()
-        response = client.post("/v1/generate-project-ideas", json=payload_dict)
-        assert response.status_code == 200
-        data = response.json()
-        # The mock will return at most the number of templates it has, or num_req, whichever is smaller.
-        # Our refined mock tries to fulfill num_req up to its template diversity.
-        assert len(data["generated_ideas"]) == num_req # Check if refined mock can meet this
-        assert data["debug_info"]["num_ideas_requested"] == num_req
-        assert data["debug_info"]["num_ideas_generated_valid"] == num_req
+    # Verify arguments passed to trigger_ai_tutor
+    tutor_call_args = mock_trigger_tutor.call_args[1] # kwargs
+    assert tutor_call_args["user_id"] == project_assessment_request_payload_fail_dict["user_id"]
+    assert tutor_call_args["project_title"] == project_assessment_request_payload_fail_dict["project_idea"]["title"]
+    assert "Good start, but the core routing algorithm needs more work." in tutor_call_args["assessment_feedback"]
+    assert tutor_call_args["language_code"] == project_assessment_request_payload_fail_dict["language_code"]
+    # Check that a UserProfileSnapshotForProjects was passed (even if minimal from test setup)
+    assert isinstance(tutor_call_args["user_profile"], UserProfileSnapshotForProjects)
 
 
-@patch('uplas-ai-agents.project_generator_agent.main.mock_project_llm.generate_ideas', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_returns_empty_list(
-    mock_llm_generate_ideas, 
-    project_gen_request_payload_data_analyst: ProjectIdeaGenerationRequest,
-    event_loop 
+@patch('uplas_ai_agents.project_generator_agent.main.assessment_llm.generate_structured_response', new_callable=AsyncMock)
+async def test_assess_project_llm_returns_invalid_assessment_json(
+    mock_llm_assess: AsyncMock,
+    project_assessment_request_payload_pass_dict: Dict
 ):
-    """Test scenario where the (mocked) LLM returns no ideas."""
-    mock_llm_generate_ideas.return_value = [] # LLM found nothing suitable
-    payload_dict = project_gen_request_payload_data_analyst.model_dump()
-    
-    response = client.post("/v1/generate-project-ideas", json=payload_dict)
-    
-    assert response.status_code == 404 # As per our refined endpoint logic
-    assert "Could not generate suitable project ideas" in response.json()["detail"]
-    mock_llm_generate_ideas.assert_awaited_once()
-
-@patch('uplas-ai-agents.project_generator_agent.main.mock_project_llm.generate_ideas', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_returns_invalid_idea_structure(
-    mock_llm_generate_ideas, 
-    project_gen_request_payload_data_analyst: ProjectIdeaGenerationRequest
-):
-    """Test when LLM returns data that doesn't match GeneratedProjectIdea Pydantic model."""
-    mock_llm_generate_ideas.return_value = [
-        {"title": "Only Title Field", "difficulty_level": "easy"} # Missing many required fields
-    ]
-    payload_dict = project_gen_request_payload_data_analyst.model_dump()
-    
-    response = client.post("/v1/generate-project-ideas", json=payload_dict)
-    
-    assert response.status_code == 500 # Because raw ideas existed but all failed Pydantic validation
-    assert "AI service returned project ideas, but they were in an unexpected or incomplete format." in response.json()["detail"]
-    assert "1 idea(s) had validation issues" in response.json()["detail"] # Check the count from refined error message
-    mock_llm_generate_ideas.assert_awaited_once()
+    """Test when LLM returns malformed JSON for assessment."""
+    mock_llm_assess.return_value = {"response_text": "Not a valid JSON assessment."}
+    response = client.post("/v1/assess-project", json=project_assessment_request_payload_pass_dict)
+    assert response.status_code == 500
+    assert "llm returned invalid json for project assessment" in response.json()["detail"].lower()
 
 
-def test_generate_project_ideas_invalid_request_payload_bad_num_ideas(
-    project_gen_request_payload_data_analyst: ProjectIdeaGenerationRequest
-):
-    """Test with invalid number_of_ideas (e.g., too large or zero)."""
-    payload_dict_too_many = project_gen_request_payload_data_analyst.model_dump()
-    payload_dict_too_many["number_of_ideas"] = 10 # Pydantic model caps at 3 (le=3)
+def test_health_check_endpoint():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "healthy", "service": "ProjectGeneratorAgent"}
 
-    response_too_many = client.post("/v1/generate-project-ideas", json=payload_dict_too_many)
-    assert response_too_many.status_code == 422 # Pydantic validation error
-    error_detail_too_many = response_too_many.json()["detail"]
-    assert any("number_of_ideas" in e["loc"] and "ensure this value is less than or equal to 3" in e["msg"].lower() for e in error_detail_too_many if "loc" in e and "msg" in e)
-
-    payload_dict_zero = project_gen_request_payload_data_analyst.model_dump()
-    payload_dict_zero["number_of_ideas"] = 0 # Pydantic model requires ge=1
-    response_zero = client.post("/v1/generate-project-ideas", json=payload_dict_zero)
-    assert response_zero.status_code == 422 # Pydantic validation error
-    error_detail_zero = response_zero.json()["detail"]
-    assert any("number_of_ideas" in e["loc"] and "ensure this value is greater than or equal to 1" in e["msg"].lower() for e in error_detail_zero if "loc" in e and "msg" in e)
-
-
-@patch('uplas-ai-agents.project_generator_agent.main.mock_project_llm.generate_ideas', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_call_exception(
-    mock_llm_generate_ideas, 
-    project_gen_request_payload_data_analyst: ProjectIdeaGenerationRequest
-):
-    """Test handling of an unexpected exception from the LLM client call."""
-    mock_llm_generate_ideas.side_effect = Exception("Simulated LLM Service Network Outage")
-    payload_dict = project_gen_request_payload_data_analyst.model_dump()
-    
-    response = client.post("/v1/generate-project-ideas", json=payload_dict)
-    
-    assert response.status_code == 503
-    assert "Error communicating with the AI project generation service" in response.json()["detail"]
-    mock_llm_generate_ideas.assert_awaited_once()
-
-
-# --- Direct tests for construct_project_gen_prompt (Conceptual LLM Prompting) ---
-from .main import construct_project_gen_prompt
-
-def test_construct_project_gen_prompt_includes_all_sections_and_personalization_cues(
-    user_profile_data_analyst: UserProfileSnapshotForProjects,
-    project_prefs_advanced_python: ProjectPreferences
-):
-    """Test the detailed prompt construction for a real LLM, based on refined main.py."""
-    prompt = construct_project_gen_prompt(
-        user_profile=user_profile_data_analyst,
-        preferences=project_prefs_advanced_python,
-        num_ideas=1
-    )
-    # Check for key instructional phrases and structure from the refined prompt
-    assert "You are an AI assistant specialized in generating personalized, real-world project ideas" in prompt
-    assert "USER PROFILE:" in prompt
-    assert f"- Current or Target Industry: {user_profile_data_analyst.industry}" in prompt
-    knowledge_str_expected = ", ".join([f"{k}: {v}" for k, v in user_profile_data_analyst.current_knowledge_level.items()])
-    assert f"- Self-Assessed Knowledge Levels: {knowledge_str_expected}" in prompt
-    assert f"- Specific Areas of Interest: {', '.join(user_profile_data_analyst.areas_of_interest)}" in prompt
-    
-    assert "USER'S PROJECT PREFERENCES:" in prompt
-    assert f"- Desired Difficulty Level: {project_prefs_advanced_python.difficulty_level}" in prompt
-    assert f"- Preferred Technologies: {', '.join(project_prefs_advanced_python.preferred_technologies)}" in prompt
-    
-    assert "TASK: Generate 1 distinct project idea(s)" in prompt
-    assert '"title": "string (catchy, descriptive, and highly personalized project title' in prompt # Check for JSON structure guidance
-    assert '"personalization_rationale": "string (CRUCIAL: 2-3 sentences explaining *precisely* why this project' in prompt
-    assert "IMPORTANT: Respond with a valid JSON list" in prompt
-    # Check for placeholders for personalization in the JSON structure example within the prompt
-    assert "highly relevant for your interest in building scalable web services for the {user_profile.industry or 'tech'} sector." in prompt
-    assert "{user_profile.current_knowledge_level.get(\"Python\", \"Basic Python proficiency\")}" in prompt
-
-
-def test_construct_project_gen_prompt_handles_minimal_profile_and_default_prefs():
-    """Test prompt construction with minimal user input, relying on defaults for prefs."""
-    minimal_profile = UserProfileSnapshotForProjects(user_id="user_minimal_test_123")
-    default_prefs = ProjectPreferences() # All fields will have their defaults or be None
-    
-    prompt = construct_project_gen_prompt(
-        user_profile=minimal_profile,
-        preferences=default_prefs,
-        num_ideas=1
-    )
-    assert "USER PROFILE:" in prompt
-    assert f"- User ID (for reference only): {minimal_profile.user_id}" in prompt
-    assert "- Current or Target Industry:" not in prompt # Should not appear if field is None in profile
-    assert "- Self-Assessed Knowledge Levels:" not in prompt # Should not appear if field is empty dict
-
-    assert "USER'S PROJECT PREFERENCES:" in prompt
-    assert f"- Desired Difficulty Level: {default_prefs.difficulty_level}" in prompt # Default 'intermediate'
-    assert "- Preferred Technologies: User is open to suggestions" in prompt # Specific text for empty list
-    assert "TASK: Generate 1 distinct project idea(s)" in prompt
-
-
-# To run these tests (requires pytest and pytest-asyncio for async patched methods if directly testing async functions):
-# From within the directory containing main.py and test_main.py (e.g., uplas-ai-agents/project_generator_agent/):
+# To run these tests:
+# From within uplas-ai-agents/project_generator_agent/
 # pytest
