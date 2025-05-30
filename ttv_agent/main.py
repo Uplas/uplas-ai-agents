@@ -1,258 +1,363 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request as FastAPIRequest
-from pydantic import BaseModel, Field, HttpUrl
+# uplas-ai-agents/ttv_agent/main.py
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request as FastAPIRequest, status
+from pydantic import BaseModel, Field, HttpUrl, validator
 from typing import List, Dict, Optional, Any, Union
 from enum import Enum
-from .animation_logic.avatar_service_client import AvatarServiceClient # Relative import
 import os
 import uuid
-import time # For processing time and job IDs
-import random # For mock elements
+import time
+import httpx # For making API calls to other agents and Django
+import logging
+import random # For attire selection and mock elements
 
-# --- Pydantic Models for API Contract ---
+# Assuming character_manager is in animation_logic, and avatar_api_client is also there
+# These imports are based on the structure seen in the uploaded files.
+from .animation_logic.character_manager import (
+    InstructorChars, # Enum for character names
+    get_character_config,
+    get_avatar_service_id as get_character_avatar_id_from_service, # Service-specific ID for the character model
+    get_voice_settings as get_character_voice_settings, # Default voice settings for character (can be overridden)
+    get_attire_id as get_character_attire_id, # Service-specific ID for attire
+    CharacterConfigError
+)
+# This will be our refined ThirdPartyAvatarAPIClient interface
+from .animation_logic.avatar_api_client import ThirdPartyAvatarAPIClient, AvatarJobError
 
-class UserProfileSnapshotForTTV(BaseModel): # Subset of UserProfile relevant to TTV
+
+# --- Configuration ---
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+TTV_GCS_BUCKET_NAME = os.getenv("TTV_GCS_BUCKET_NAME") # For storing final videos/thumbnails
+DJANGO_TTV_CALLBACK_URL = os.getenv("DJANGO_TTV_CALLBACK_URL") # e.g., http://your-django-app/api/internal/ttv-callback/
+
+# URLs for other Uplas AI Agents (these should be discoverable, e.g., via service discovery or env vars)
+AI_TUTOR_AGENT_URL = os.getenv("AI_TUTOR_AGENT_URL", "http://localhost:8001") # Default for local dev if tutor runs on 8001
+TTS_AGENT_URL = os.getenv("TTS_AGENT_URL", "http://localhost:8002") # Default for local dev if TTS runs on 8002
+
+# API Key for the Third-Party Avatar Service (MUST BE SET IN ENV)
+THIRD_PARTY_AVATAR_API_KEY = os.getenv("THIRD_PARTY_AVATAR_API_KEY")
+THIRD_PARTY_AVATAR_BASE_URL = os.getenv("THIRD_PARTY_AVATAR_BASE_URL") # If needed by the client
+
+# Supported languages - align with other agents
+SUPPORTED_LANGUAGES = ["en-US", "fr-FR", "es-ES", "de-DE", "pt-BR", "zh-CN", "hi-IN"]
+DEFAULT_LANGUAGE = "en-US"
+
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- Pydantic Models for API Contract (Updated) ---
+
+class UserProfileSnapshotForTTV(BaseModel): # Subset of UserProfile relevant to TTV script personalization
     industry: Optional[str] = Field(None, examples=["Healthcare"])
     profession: Optional[str] = Field(None, examples=["Nurse Practitioner"])
     country: Optional[str] = Field(None, examples=["Canada"])
     city: Optional[str] = Field(None, examples=["Toronto"])
-    # Add learning_style_preference if it influences visual presentation
-    # learning_style_preference: Optional[Dict[str, float]] = Field(default_factory=dict)
-    preferred_ttv_instructor: Optional[str] = Field(None, examples=["susan"]) # uncle_trevor or susan
-    # preferred_ttv_instructor_attire: Optional[str] = Field(None, examples=["professional_everyday", "lab_coat_uncle_trevor"])
+    career_interest: Optional[str] = Field(None, examples=["AI in Medicine"])
+    learning_goals: Optional[str] = Field(None, examples=["Understand how AI can improve diagnostics."])
+    preferred_tutor_persona: Optional[str] = Field("Supportive and clear", examples=["Socratic", "Technical"])
 
 
 class ContentSource(BaseModel):
     topic_id: Optional[str] = Field(None, examples=["topic_uuid_for_python_loops"])
+    course_id: Optional[str] = Field(None, examples=["course_uuid_intro_python"])
     raw_text_content: Optional[str] = Field(None, examples=["Explain Python loops with an example for a beginner in finance."])
-    # Potentially add course_id if topic_id alone isn't enough context for Django content fetching
-    course_id: Optional[str] = None
+    # For TTV, we'll primarily rely on the AI Tutor to generate a script based on topic/course context.
+    # If raw_text_content is provided, it might be a summary or key points to expand.
 
     @validator('raw_text_content', always=True)
     def check_content_provided(cls, v, values):
-        if not v and not values.get('topic_id'):
-            raise ValueError('Either topic_id or raw_text_content must be provided.')
+        # For TTV, we might primarily use topic_id/course_id to fetch structured content for script generation.
+        # If raw_text_content is the only source, it needs to be substantial enough for a 3-5 min video script.
+        if not v and not values.get('topic_id') and not values.get('course_id'):
+            raise ValueError('Either topic_id/course_id (for script generation) or raw_text_content must be provided.')
         return v
-
-
-class InstructorCharacterEnum(str, Enum):
-    UNCLE_TREVOR = "uncle_trevor"
-    SUSAN = "susan"
-
 
 class GenerateVideoRequest(BaseModel):
     user_id: str = Field(..., examples=["user_uuid_for_video_gen"])
     content_source: ContentSource
-    instructor_character: InstructorCharacterEnum = Field(InstructorCharacterEnum.SUSAN)
-    # User preference can be overridden by this request
-    # user_profile_snapshot: UserProfileSnapshotForTTV # Full profile from Django call
-    # For TTV, we might only need a few key fields for script personalization directly in this request
-    # The Django backend would construct this based on the full user profile.
-    personalization_hints: Optional[Dict[str, str]] = Field(default_factory=dict, examples=[{"industry": "Finance", "profession": "Analyst"}])
-    preferred_video_length_minutes: Optional[str] = Field("3-5", examples=["2-3", "4-6"])
-    # Add language if videos can be in different languages
-    language_code: Optional[str] = Field("en-US", examples=["en-US", "es-ES"])
+    instructor_character: InstructorChars # Using the Enum: UNCLE_TREVOR or SUSAN
+    user_profile_snapshot: UserProfileSnapshotForTTV # For personalizing the script
+    language_code: Optional[str] = Field(DEFAULT_LANGUAGE, examples=SUPPORTED_LANGUAGES)
+    preferred_video_length_minutes: str = Field("3-5", examples=["2-3", "4-6"], description="Target length for the video script.")
+    # Optional: allow user to specify attire or let the system choose based on context/day
+    preferred_attire_name: Optional[str] = Field(None, examples=["professional_blazer_blue_susan", "cozy_cardigan_green_trevor"])
+    # Optional: specific instructions for the video, e.g., tone, style
+    additional_instructions: Optional[str] = Field(None, examples=["Make the tone very encouraging.", "Focus on practical examples."])
 
+    @validator('language_code')
+    def validate_language_code(cls, v):
+        if v not in SUPPORTED_LANGUAGES:
+            logger.warning(f"Unsupported language_code '{v}' received. Falling back to default '{DEFAULT_LANGUAGE}'.")
+            return DEFAULT_LANGUAGE
+        return v
 
 class VideoGenerationJobStatus(str, Enum):
     PENDING = "pending"
-    PROCESSING_SCRIPT = "processing_script"
-    PROCESSING_AUDIO = "processing_audio"
-    PROCESSING_AVATAR = "processing_avatar_video"
+    FETCHING_CONTENT = "fetching_content" # If fetching from Django
+    GENERATING_SCRIPT = "generating_script"
+    GENERATING_AUDIO = "generating_audio"
+    SUBMITTING_TO_AVATAR_SERVICE = "submitting_to_avatar_service"
+    RENDERING_AVATAR_VIDEO = "rendering_avatar_video" # Status from third-party service
     COMPLETED = "completed"
     FAILED = "failed"
-
 
 class GenerateVideoInitialResponse(BaseModel):
     job_id: str = Field(..., examples=[f"ttvjob_{uuid.uuid4()}"])
     status: VideoGenerationJobStatus = Field(VideoGenerationJobStatus.PENDING)
     message: str = Field("Video generation task accepted and queued.")
-    estimated_completion_time_minutes: Optional[int] = Field(None, examples=[5, 10]) # Rough estimate
-
+    estimated_completion_time_minutes: Optional[int] = Field(None, examples=[10, 20]) # Rough estimate
 
 class VideoCallbackPayload(BaseModel): # For when video is ready (TTV agent calls Django)
     job_id: str
     status: VideoGenerationJobStatus
-    video_url: Optional[HttpUrl] = None # Using Pydantic's HttpUrl for validation
+    video_url: Optional[HttpUrl] = None
     thumbnail_url: Optional[HttpUrl] = None
     error_message: Optional[str] = None
     video_duration_seconds: Optional[float] = None
-
+    script_generated_preview: Optional[str] = None # First few lines of the script
+    character_used: Optional[str] = None
+    attire_used: Optional[str] = None
 
 # --- FastAPI Application ---
 app = FastAPI(
-    title="Uplas Text-to-Video (TTV) Agent",
-    description="Orchestrates script generation, TTS, and avatar video synthesis (all mocked).",
-    version="0.1.0"
+    title="Uplas Text-to-Video (TTV) Agent (Real Integration Placeholder)",
+    description="Orchestrates script generation, TTS, and avatar video synthesis.",
+    version="0.2.0"
 )
 
-# --- Mock External Service Clients ---
-MOCKED_GCS_VIDEO_BUCKET = "mocked-uplas-ttv-videos"
-MOCKED_DJANGO_CALLBACK_URL = os.getenv("DJANGO_TTV_CALLBACK_URL", "http://localhost:8000/api/internal/ttv-callback/") # Placeholder
-
-# In-memory "job store" for this mock agent
+# --- In-memory "job store" for this agent ---
+# In production, use Redis or a database for persistence.
 video_jobs: Dict[str, Dict[str, Any]] = {}
 
-class MockLLMForScriptClient:
-    async def generate_script(self, text_topic: str, personalization_hints: Dict, instructor: str, length_minutes: str, lang: str) -> str:
-        # Simulate script generation
-        print(f"MockLLM(Script): Generating script for '{text_topic[:30]}...' for {instructor} ({length_minutes} min, lang={lang}) with hints: {personalization_hints}")
-        persona_script_intro = ""
-        if instructor == InstructorCharacterEnum.UNCLE_TREVOR:
-            persona_script_intro = "Alright folks, Uncle Trevor here! Let's dive into this. "
-            if "Finance" in personalization_hints.get("industry", ""):
-                persona_script_intro += "Now, if you're in finance, this is like managing your portfolio... "
-        elif instructor == InstructorCharacterEnum.SUSAN:
-            persona_script_intro = "Hello everyone, I'm Susan. Today, we'll explore an exciting concept. "
-            if "Healthcare" in personalization_hints.get("industry", ""):
-                 persona_script_intro += "For those in healthcare, this is similar to diagnosing a patient based on symptoms... "
+# --- Initialize Third-Party Avatar Client ---
+# This client needs to be implemented based on the chosen avatar service.
+# It's initialized here to be used by the background task.
+if not THIRD_PARTY_AVATAR_API_KEY or not THIRD_PARTY_AVATAR_BASE_URL:
+    logger.warning("THIRD_PARTY_AVATAR_API_KEY or THIRD_PARTY_AVATAR_BASE_URL not set. Avatar service calls will be mocked/fail.")
+    # Fallback to a mock client if not configured, or raise an error
+    avatar_service_client = ThirdPartyAvatarAPIClient(is_mock=True) # Assuming client can run in mock mode
+else:
+    avatar_service_client = ThirdPartyAvatarAPIClient(
+        api_key=THIRD_PARTY_AVATAR_API_KEY,
+        base_url=THIRD_PARTY_AVATAR_BASE_URL
+    )
 
-        script = f"""
-        [SCENE START]
-        VISUAL: Title Card: Explanation of '{text_topic[:20]}'
-        {instructor.upper()}: {persona_script_intro}Today we are talking about '{text_topic}'.
 
-        [SCENE BREAK]
-        VISUAL: {instructor} on screen, dynamic background related to {personalization_hints.get("industry", "a general topic")}.
-        {instructor.upper()}: This concept is particularly useful for a {personalization_hints.get("profession", "learner")}. For instance... [explains concept with a simple example].
+# --- Helper Function to Update Job Status (and potentially send to Django) ---
+async def update_job_status_and_notify(job_id: str, new_status: VideoGenerationJobStatus, **kwargs):
+    if job_id not in video_jobs:
+        logger.error(f"Job ID {job_id} not found in store for status update to {new_status}.")
+        return
 
-        [SCENE BREAK]
-        VISUAL: On-screen text highlighting key points.
-        {instructor.upper()}: Remember these key takeaways: 1. Point one. 2. Point two.
+    video_jobs[job_id]["status"] = new_status
+    video_jobs[job_id].update(kwargs) # Update with any additional info (video_url, error_message, etc.)
+    logger.info(f"TTV Job {job_id}: Status updated to {new_status}. Details: {kwargs}")
 
-        [SCENE END]
-        {instructor.upper()}: I hope that clarifies things! Keep learning!
-        """
-        # await asyncio.sleep(random.uniform(0.5, 1.5)) # Simulate LLM processing
-        return script
+    # If terminal status (COMPLETED or FAILED), send callback to Django
+    if new_status in [VideoGenerationJobStatus.COMPLETED, VideoGenerationJobStatus.FAILED]:
+        if not DJANGO_TTV_CALLBACK_URL:
+            logger.warning(f"DJANGO_TTV_CALLBACK_URL not set. Cannot send callback for job {job_id}.")
+            return
 
-class MockTTSForVideoClient: # Could eventually call our TTS Agent 2
-    async def generate_audio_from_script(self, script: str, instructor: str, lang: str) -> Dict[str, Any]:
-        # Simulate TTS, return path to a (mock) audio file and duration
-        print(f"MockTTS(Video): Generating audio for {instructor} (lang={lang}) from script: '{script[:50]}...'")
-        audio_filename = f"audio_{instructor}_{uuid.uuid4()}.mp3"
-        mock_audio_path_gcs = f"gs://{MOCKED_GCS_VIDEO_BUCKET}/intermediate_audio/{audio_filename}"
-        
-        # Simulate audio content being generated and stored
-        # In a real scenario, actual audio bytes would be created.
-        # For mock, we just generate a path.
-        
-        # Estimate duration based on script length (very rough)
-        duration_seconds = len(script.split()) / 2.5 # Approx 2.5 words per second
-        # await asyncio.sleep(random.uniform(1.0, 3.0)) # Simulate TTS processing
-        return {"gcs_audio_url": mock_audio_path_gcs, "duration_seconds": round(duration_seconds,2)}
+        callback_payload = VideoCallbackPayload(
+            job_id=job_id,
+            status=new_status,
+            video_url=video_jobs[job_id].get("video_url"),
+            thumbnail_url=video_jobs[job_id].get("thumbnail_url"),
+            error_message=video_jobs[job_id].get("error_message"),
+            video_duration_seconds=video_jobs[job_id].get("video_duration_seconds"),
+            script_generated_preview=video_jobs[job_id].get("script_generated_preview"),
+            character_used=video_jobs[job_id].get("character_used"),
+            attire_used=video_jobs[job_id].get("attire_used")
+        )
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(DJANGO_TTV_CALLBACK_URL, json=callback_payload.model_dump(exclude_none=True))
+                response.raise_for_status()
+                logger.info(f"TTV Job {job_id}: Callback successfully sent to Django. Response: {response.status_code}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"TTV Job {job_id}: Failed to send callback to Django. Status: {e.response.status_code}, Body: {e.response.text}", exc_info=True)
+        except Exception as e:
+            logger.error(f"TTV Job {job_id}: Exception during Django callback. Error: {e}", exc_info=True)
 
-class MockAvatarVideoClient: # Simulates D-ID, Synthesia, etc.
-    async def generate_video_from_audio_and_avatar(
-        self, audio_url: str, instructor: str, instructor_attire: Optional[str] = None
-    ) -> Dict[str, Any]:
-        print(f"MockAvatarVideo: Generating video for {instructor} (attire: {instructor_attire or 'default'}) using audio: {audio_url}")
-        video_filename = f"video_{instructor}_{uuid.uuid4()}.mp4"
-        mock_video_path_gcs = f"https://storage.googleapis.com/{MOCKED_GCS_VIDEO_BUCKET}/final_videos/{video_filename}"
-        mock_thumbnail_path_gcs = f"https://storage.googleapis.com/{MOCKED_GCS_VIDEO_BUCKET}/final_videos/thumbnails/thumb_{video_filename}.jpg"
-        
-        # Simulate video generation time based on audio length (if we had it)
-        # await asyncio.sleep(random.uniform(5.0, 15.0)) # Simulate video rendering
-        return {"gcs_video_url": mock_video_path_gcs, "gcs_thumbnail_url": mock_thumbnail_path_gcs}
 
-# Initialize mock clients
-mock_script_llm = MockLLMForScriptClient()
-mock_tts_video = MockTTSForVideoClient()
-mock_avatar_client = MockAvatarVideoClient()
-
-# --- Background Task for Video Generation ---
+# --- Background Task for Video Generation Pipeline ---
 async def process_video_generation_task(job_id: str, request_data: GenerateVideoRequest):
     """
-    The actual video generation pipeline (all steps mocked).
-    This runs in the background.
+    The actual video generation pipeline.
+    1. Generate Script (via AI Tutor Agent)
+    2. Generate Audio (via TTS Agent)
+    3. Generate Avatar Video (via Third-Party Avatar Service)
+    4. Store video and notify Django.
     """
-    global video_jobs
-    video_jobs[job_id]["status"] = VideoGenerationJobStatus.PROCESSING_SCRIPT
-    print(f"TTV Job {job_id}: Started processing.")
+    await update_job_status_and_notify(job_id, VideoGenerationJobStatus.GENERATING_SCRIPT)
+    script_text: Optional[str] = None
+    generated_audio_gcs_url: Optional[str] = None # URL from TTS agent, ideally already in GCS
+    tts_duration_seconds: Optional[float] = None
 
     try:
-        # 1. Fetch content if topic_id provided (mocked call to Django)
-        actual_content_to_explain = request_data.content_source.raw_text_content
-        if not actual_content_to_explain and request_data.content_source.topic_id:
-            # actual_content_to_explain = await fetch_topic_content_from_django(request_data.content_source.topic_id)
-            actual_content_to_explain = f"Detailed content for topic {request_data.content_source.topic_id} (fetched from mock Django)."
-            if not actual_content_to_explain:
-                raise ValueError(f"Could not fetch content for topic_id: {request_data.content_source.topic_id}")
+        # === Step 1: Generate Script using AI Tutor Agent ===
+        # The AI Tutor agent is better suited for generating personalized, instructional text.
+        # We'll ask it for a script based on the context.
+        logger.info(f"Job {job_id}: Requesting script from AI Tutor Agent for topic: {request_data.content_source.topic_id or 'raw_text'}")
         
-        # 2. Generate script
-        script = await mock_script_llm.generate_script(
-            text_topic=actual_content_to_explain,
-            personalization_hints=request_data.personalization_hints,
-            instructor=request_data.instructor_character.value,
-            length_minutes=request_data.preferred_video_length_minutes,
-            lang=request_data.language_code
+        # Construct a query for the AI Tutor to generate a video script
+        script_query = (
+            f"Generate a {request_data.preferred_video_length_minutes} minute video script explaining "
+            f"{request_data.content_source.raw_text_content or ('the topic: ' + (request_data.content_source.current_topic_title or request_data.content_source.topic_id or 'the provided subject'))}. "
+            f"The script is for instructor '{request_data.instructor_character.value}'. "
+            f"Incorporate analogies and examples relevant to the user. "
+            f"{request_data.additional_instructions or ''} "
+            "The script should be engaging and easy to follow. Structure it with scene descriptions or cues if possible, e.g., [VISUAL: ...], [SOUND: ...]."
         )
-        video_jobs[job_id]["status"] = VideoGenerationJobStatus.PROCESSING_AUDIO
-        video_jobs[job_id]["generated_script_preview"] = script[:200] # Store preview
 
-        # 3. Generate TTS from script
-        audio_info = await mock_tts_video.generate_audio_from_script(
-            script=script,
-            instructor=request_data.instructor_character.value,
-            lang=request_data.language_code
-        )
-        video_jobs[job_id]["status"] = VideoGenerationJobStatus.PROCESSING_AVATAR
-        video_jobs[job_id]["audio_url_temp"] = audio_info["gcs_audio_url"]
-        video_duration_seconds = audio_info["duration_seconds"]
+        tutor_payload = {
+            "user_id": request_data.user_id,
+            "query_text": script_query,
+            "user_profile_snapshot": request_data.user_profile_snapshot.model_dump(),
+            "language_code": request_data.language_code,
+            "context": { # Pass context to AI Tutor
+                "course_id": request_data.content_source.course_id,
+                "topic_id": request_data.content_source.topic_id,
+                # "current_topic_title": request_data.content_source.current_topic_title # If available
+            },
+            "max_tokens_response": 2048 # Allow for longer script
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client: # Increased timeout for LLM script gen
+            response = await client.post(f"{AI_TUTOR_AGENT_URL}/v1/ask-tutor", json=tutor_payload)
+            response.raise_for_status()
+            tutor_response_data = response.json()
+            script_text = tutor_response_data.get("answer_text")
 
-
-        # 4. Generate Avatar Video from TTS audio
-        # Simulate different attire based on day or preference (if passed)
-        attire_options = {"uncle_trevor": ["casual_ut", "professional_ut"], "susan": ["smart_casual_s", "formal_s"]}
-        chosen_attire = random.choice(attire_options.get(request_data.instructor_character.value, ["default"]))
+        if not script_text or len(script_text) < 50: # Basic check for meaningful script
+            raise ValueError(f"AI Tutor returned an insufficient script: '{script_text}'")
         
-        video_output = await mock_avatar_client.generate_video_from_audio_and_avatar(
-            audio_url=audio_info["gcs_audio_url"],
-            instructor=request_data.instructor_character.value,
-            instructor_attire=chosen_attire
+        logger.info(f"Job {job_id}: Script generated successfully (length: {len(script_text)}). Preview: {script_text[:200]}...")
+        await update_job_status_and_notify(job_id, VideoGenerationJobStatus.GENERATING_AUDIO, script_generated_preview=script_text[:500])
+
+        # === Step 2: Generate Audio using TTS Agent ===
+        logger.info(f"Job {job_id}: Requesting audio from TTS Agent for script.")
+        
+        # Determine voice character for TTS based on TTV instructor
+        # This mapping should be robust. For now, a simple assumption.
+        tts_voice_char_map = {
+            InstructorChars.SUSAN: "susan_pro_voice", # Defined in your TTS Agent's UPLAS_VOICE_CHARACTER_MAP
+            InstructorChars.UNCLE_TREVOR: "trevor_wise_voice"
+        }
+        tts_voice_character = tts_voice_char_map.get(request_data.instructor_character, "default_en_us_female")
+
+        tts_payload = {
+            "text_to_speak": script_text,
+            "language_code": request_data.language_code, # TTS agent will use this
+            "voice_params": {"voice_character_name": tts_voice_character},
+            "audio_config": {"audio_encoding": "MP3"} # Avatar services often prefer MP3 or WAV
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(f"{TTS_AGENT_URL}/v1/synthesize-speech", json=tts_payload)
+            response.raise_for_status()
+            tts_response_data = response.json()
+            generated_audio_gcs_url = tts_response_data.get("audio_url")
+            tts_duration_seconds = tts_response_data.get("audio_duration_seconds")
+
+        if not generated_audio_gcs_url:
+            raise ValueError("TTS Agent did not return an audio URL.")
+        
+        logger.info(f"Job {job_id}: Audio generated successfully: {generated_audio_gcs_url}")
+        await update_job_status_and_notify(job_id, VideoGenerationJobStatus.SUBMITTING_TO_AVATAR_SERVICE, audio_gcs_url_temp=generated_audio_gcs_url)
+
+        # === Step 3: Generate Avatar Video ===
+        logger.info(f"Job {job_id}: Submitting job to Third-Party Avatar Service.")
+        
+        # Get character and attire details using CharacterManager
+        try:
+            character_service_avatar_id = get_character_avatar_id_from_service(request_data.instructor_character.value)
+            
+            # Attire selection logic (can be more sophisticated)
+            attire_tags = ["daily_professional"] # Default tags
+            if "formal" in (request_data.additional_instructions or "").lower():
+                attire_tags = ["formal"]
+            
+            chosen_attire_service_id = get_character_attire_id(
+                instructor_character_name=request_data.instructor_character.value,
+                preferred_attire_name=request_data.preferred_attire_name,
+                tags=attire_tags
+            )
+            # Store the name of the attire for the callback
+            # This requires mapping service_attire_id back to a name, or storing the name initially.
+            # For simplicity, we'll just use the service ID for now in the log.
+            video_jobs[job_id]["attire_used"] = chosen_attire_service_id or "default"
+
+        except CharacterConfigError as e:
+            logger.error(f"Job {job_id}: Character configuration error: {e}", exc_info=True)
+            raise ValueError(f"Invalid character or attire configuration: {e}")
+
+        # Submit to the third-party avatar service
+        service_job_details = await avatar_service_client.submit_video_creation_job(
+            service_avatar_id=character_service_avatar_id,
+            audio_file_gcs_url=generated_audio_gcs_url, # Pass the GCS URL of the audio
+            # language_code=request_data.language_code, # Service might need this for lip-sync accuracy if not inferred
+            service_attire_id=chosen_attire_service_id,
+            # background_settings, output_webhook_url etc. can be added if service supports
         )
         
-        final_video_url = video_output["gcs_video_url"]
-        final_thumbnail_url = video_output["gcs_thumbnail_url"]
-        video_jobs[job_id].update({
-            "status": VideoGenerationJobStatus.COMPLETED,
-            "video_url": final_video_url,
-            "thumbnail_url": final_thumbnail_url,
-            "video_duration_seconds": video_duration_seconds,
-            "error_message": None
-        })
-        print(f"TTV Job {job_id}: Successfully completed. Video URL: {final_video_url}")
+        third_party_job_id = service_job_details.get("service_job_id")
+        if not third_party_job_id:
+            raise AvatarJobError("Avatar service did not return a job ID.")
+        
+        video_jobs[job_id]["third_party_avatar_job_id"] = third_party_job_id
+        await update_job_status_and_notify(job_id, VideoGenerationJobStatus.RENDERING_AVATAR_VIDEO, third_party_job_id=third_party_job_id)
+        logger.info(f"Job {job_id}: Submitted to avatar service. Service Job ID: {third_party_job_id}")
+
+        # === Step 4: Poll for Avatar Video Completion (or use webhook if service supports it) ===
+        # This is a simplified polling loop. Production systems might use webhooks or more robust polling.
+        max_polling_attempts = 60 # e.g., 30 minutes if polling every 30s
+        poll_interval_seconds = 30 
+        final_video_url: Optional[str] = None
+        final_thumbnail_url: Optional[str] = None
+        video_duration: Optional[float] = tts_duration_seconds # Use TTS duration as an estimate
+
+        for attempt in range(max_polling_attempts):
+            await asyncio.sleep(poll_interval_seconds) # Use asyncio.sleep for async background task
+            logger.info(f"Job {job_id}: Polling avatar service for job {third_party_job_id}, attempt {attempt + 1}")
+            status_response = await avatar_service_client.poll_video_job_status(third_party_job_id)
+            
+            current_service_status = status_response.get("status")
+            if current_service_status == "completed":
+                final_video_url = status_response.get("videoUrl")
+                final_thumbnail_url = status_response.get("thumbnailUrl")
+                video_duration = status_response.get("durationSeconds", tts_duration_seconds) # Prefer service duration
+                if not final_video_url:
+                    raise AvatarJobError("Avatar service reported 'completed' but no video URL provided.")
+                logger.info(f"Job {job_id}: Avatar video completed. URL: {final_video_url}")
+                break
+            elif current_service_status == "failed":
+                error_msg = status_response.get("errorMessage", "Avatar generation failed with no specific message.")
+                raise AvatarJobError(f"Avatar generation failed: {error_msg}")
+            elif current_service_status in ["processing", "queued", "rendering"]:
+                logger.info(f"Job {job_id}: Avatar video still '{current_service_status}'. Polling again...")
+                # Update job status if you want to reflect these intermediate avatar service statuses
+                await update_job_status_and_notify(job_id, VideoGenerationJobStatus.RENDERING_AVATAR_VIDEO, service_status_detail=current_service_status)
+            else:
+                logger.warning(f"Job {job_id}: Unknown status from avatar service: {current_service_status}")
+        else: # Loop finished without break (max_polling_attempts reached)
+            raise TimeoutError("Timeout waiting for avatar video generation to complete.")
+
+        # === Step 5: Finalize and Notify ===
+        # Optionally, copy the video from the third-party service's storage to your own GCS bucket
+        # For now, we assume final_video_url is directly usable or points to a GCS location.
+        
+        await update_job_status_and_notify(
+            job_id,
+            VideoGenerationJobStatus.COMPLETED,
+            video_url=final_video_url,
+            thumbnail_url=final_thumbnail_url,
+            video_duration_seconds=video_duration,
+            character_used=request_data.instructor_character.value
+        )
 
     except Exception as e:
-        print(f"TTV Job {job_id}: Failed. Error: {e}")
-        video_jobs[job_id].update({
-            "status": VideoGenerationJobStatus.FAILED,
-            "error_message": str(e)
-        })
-        final_video_url = None # Ensure it's None on failure
-        final_thumbnail_url = None
-        video_duration_seconds = None
-
-
-    # 5. Send callback to Django (mocked)
-    # In a real system, use a robust task queue (Celery, RabbitMQ, Pub/Sub) for this callback.
-    callback_payload = VideoCallbackPayload(
-        job_id=job_id,
-        status=video_jobs[job_id]["status"],
-        video_url=final_video_url, # Pydantic will validate if it's a valid HttpUrl or None
-        thumbnail_url=final_thumbnail_url,
-        error_message=video_jobs[job_id].get("error_message"),
-        video_duration_seconds=video_duration_seconds
-    )
-    try:
-        # This is a fire-and-forget call for the mock. Production needs retries/dead-letter queue.
-        # async with httpx.AsyncClient() as client:
-        #     response = await client.post(MOCKED_DJANGO_CALLBACK_URL, json=callback_payload.model_dump())
-        #     response.raise_for_status() # Check for callback errors
-        print(f"TTV Job {job_id}: Simulated callback sent to Django with payload: {callback_payload.model_dump_json(indent=2)}")
-    except Exception as cb_e:
-        print(f"TTV Job {job_id}: Failed to send callback to Django. Error: {cb_e}")
-        # Log this failure, might need manual reconciliation.
-
+        logger.error(f"TTV Job {job_id}: Failed. Error: {e}", exc_info=True)
+        await update_job_status_and_notify(job_id, VideoGenerationJobStatus.FAILED, error_message=str(e))
 
 # --- API Endpoints ---
 
@@ -262,53 +367,77 @@ async def generate_video_endpoint(request_data: GenerateVideoRequest, background
     Accepts a request to generate an instructor video.
     Starts the generation process in the background and returns a job ID.
     """
+    if not GCP_PROJECT_ID or not TTV_GCS_BUCKET_NAME: # Basic config check
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="TTV service is not properly configured (missing GCP Project ID or GCS Bucket).")
+
     job_id = f"ttvjob_{uuid.uuid4()}"
-    # Store job initial info (in-memory for mock, use DB/Redis in production)
     video_jobs[job_id] = {
         "status": VideoGenerationJobStatus.PENDING,
-        "requested_at": time.time(), # Using time.time() for simple timestamp
+        "requested_at": time.time(),
         "user_id": request_data.user_id,
-        "instructor": request_data.instructor_character.value,
+        "instructor_character_requested": request_data.instructor_character.value,
+        "language_requested": request_data.language_code,
         "error_message": None,
         "video_url": None
     }
-
-    # Add the long-running task to background
     background_tasks.add_task(process_video_generation_task, job_id, request_data)
-
-    # Estimate completion time (very rough for mock)
-    estimated_time = 5 # minutes
-    if "long" in request_data.content_source.raw_text_content if request_data.content_source.raw_text_content else False:
-        estimated_time = 10
+    estimated_time = 15 # Default rough estimate in minutes
+    return GenerateVideoInitialResponse(job_id=job_id, status=VideoGenerationJobStatus.PENDING, estimated_completion_time_minutes=estimated_time)
 
 
-    return GenerateVideoInitialResponse(
-        job_id=job_id,
-        status=VideoGenerationJobStatus.PENDING,
-        estimated_completion_time_minutes=estimated_time
-    )
-
-
-@app.get("/v1/video-status/{job_id}", response_model=VideoCallbackPayload , summary="Get status of a video generation job")
+@app.get("/v1/video-status/{job_id}", response_model=VideoCallbackPayload, summary="Get status of a video generation job")
 async def get_video_status_endpoint(job_id: str):
     """
     Allows polling for the status of a video generation job.
-    (Alternative to webhook callback for frontend to check status)
     """
     job_info = video_jobs.get(job_id)
     if not job_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job ID not found.")
     
-    # Construct the response from job_info, matching VideoCallbackPayload
     return VideoCallbackPayload(
         job_id=job_id,
-        status=job_info.get("status", VideoGenerationJobStatus.FAILED), # Default to FAILED if status somehow missing
+        status=job_info.get("status", VideoGenerationJobStatus.FAILED),
         video_url=job_info.get("video_url"),
         thumbnail_url=job_info.get("thumbnail_url"),
         error_message=job_info.get("error_message"),
-        video_duration_seconds=job_info.get("video_duration_seconds")
+        video_duration_seconds=job_info.get("video_duration_seconds"),
+        script_generated_preview=job_info.get("script_generated_preview"),
+        character_used=job_info.get("character_used"),
+        attire_used=job_info.get("attire_used")
     )
 
+# --- Health Check Endpoint ---
+@app.get("/health", status_code=status.HTTP_200_OK)
+async def health_check():
+    # Basic check for critical configurations
+    if not AI_TUTOR_AGENT_URL or not TTS_AGENT_URL:
+        return {"status": "unhealthy", "reason": "Dependent agent URLs not configured.", "service": "TTV_Agent"}
+    if not DJANGO_TTV_CALLBACK_URL:
+        return {"status": "unhealthy", "reason": "Django callback URL not configured.", "service": "TTV_Agent"}
+    if not avatar_service_client or (not avatar_service_client.is_mock and (not THIRD_PARTY_AVATAR_API_KEY or not THIRD_PARTY_AVATAR_BASE_URL)):
+         return {"status": "unhealthy", "reason": "Third-party avatar service not configured.", "service": "TTV_Agent"}
+    return {"status": "healthy", "service": "TTV_Agent"}
 
-# To run this FastAPI app locally (from within uplas-ai-agents/ttv_agent/ directory):
-# uvicorn main:app --reload --port 8003
+# For asyncio.sleep in background task
+import asyncio
+
+if __name__ == "__main__":
+    import uvicorn
+    # Ensure environment variables are set for local testing
+    # e.g., GCP_PROJECT_ID, TTV_GCS_BUCKET_NAME, DJANGO_TTV_CALLBACK_URL,
+    # AI_TUTOR_AGENT_URL, TTS_AGENT_URL,
+    # THIRD_PARTY_AVATAR_API_KEY, THIRD_PARTY_AVATAR_BASE_URL
+    
+    # Example:
+    # GCP_PROJECT_ID="your-gcp-project" TTV_GCS_BUCKET_NAME="your-ttv-bucket" \
+    # DJANGO_TTV_CALLBACK_URL="http://localhost:8000/api/internal/ttv-callback/" \
+    # AI_TUTOR_AGENT_URL="http://localhost:8001" TTS_AGENT_URL="http://localhost:8002" \
+    # THIRD_PARTY_AVATAR_API_KEY="your_avatar_service_key" \
+    # THIRD_PARTY_AVATAR_BASE_URL="https://api.avatarservice.com/v1" \
+    # uvicorn main:app --reload --port 8003
+
+    if not all([GCP_PROJECT_ID, TTV_GCS_BUCKET_NAME, DJANGO_TTV_CALLBACK_URL, AI_TUTOR_AGENT_URL, TTS_AGENT_URL]):
+        print("Warning: One or more critical environment variables for TTV agent are not set.")
+    
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8003)))
+
