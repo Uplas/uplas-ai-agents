@@ -1,382 +1,510 @@
-from fastapi import FastAPI, HTTPException, Request as FastAPIRequest
-from pydantic import BaseModel, Field, validator
+# uplas-ai-agents/project_generator_agent/main.py
+from fastapi import FastAPI, HTTPException, Request as FastAPIRequest, status
+from pydantic import BaseModel, Field, validator, HttpUrl
 from typing import List, Dict, Optional, Any, Union
 import os
 import uuid
-import time # For processing time
-from enum import Enum
-import random # For mock elements
+import time
+import httpx # For calling AI Tutor Agent
+import logging
+import json # For parsing LLM JSON outputs
 
-# --- Pydantic Models for API Contract ---
+# GCP Clients
+from google.cloud import aiplatform
+import google.auth
+import google.auth.transport.requests
+
+# --- Configuration ---
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
+PROJECT_LLM_MODEL_NAME = os.getenv("PROJECT_LLM_MODEL_NAME", "gemini-1.5-flash-001") # For project ideas
+ASSESSMENT_LLM_MODEL_NAME = os.getenv("ASSESSMENT_LLM_MODEL_NAME", "gemini-1.5-flash-001") # For project assessment
+
+AI_TUTOR_AGENT_URL = os.getenv("AI_TUTOR_AGENT_URL") # e.g., http://ai-tutor-agent-service/ or http://localhost:8001
+
+# Initialize Vertex AI
+if not GCP_PROJECT_ID:
+    logging.warning("GCP_PROJECT_ID environment variable not set. LLM calls may fail.")
+else:
+    aiplatform.init(project=GCP_PROJECT_ID, location=GCP_LOCATION)
+
+# Supported languages - align with other agents
+SUPPORTED_LANGUAGES = ["en-US", "fr-FR", "es-ES", "de-DE", "pt-BR", "zh-CN", "hi-IN"]
+DEFAULT_LANGUAGE = "en-US"
+
+ASSESSMENT_PASS_THRESHOLD = 75 # Percentage
+
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- Pydantic Models for API Contract (Updated) ---
 
 class UserProfileSnapshotForProjects(BaseModel):
-    # Fields from User & UserProfile relevant for project suggestions
     user_id: str = Field(..., examples=["user_uuid_abc123"])
-    industry: Optional[str] = Field(None, examples=["Finance", "Healthcare", "Creative Arts", "Education"])
-    profession: Optional[str] = Field(None, examples=["Data Analyst", "UX Designer", "Student", "Software Developer"])
-    career_interest: Optional[str] = Field(None, examples=["Machine Learning Engineer", "Game Developer", "Cloud Architect"])
-    # Example: {"Python": "Intermediate", "Data Analysis": "Beginner", "Web Development": "Novice"}
-    current_knowledge_level: Optional[Dict[str, str]] = Field(default_factory=dict, examples=[{"Python": "Intermediate", "SQL": "Intermediate"}])
-    areas_of_interest: Optional[List[str]] = Field(default_factory=list, examples=[["NLP", "Ethical AI"], ["Sustainable Tech", "Data Visualization"]])
-    learning_goals: Optional[str] = Field(None, examples=["Build a portfolio piece for data visualization.", "Understand full-stack development principles."])
-    completed_course_ids: Optional[List[str]] = Field(default_factory=list, examples=["course_uuid_1", "course_uuid_2"])
-
+    industry: Optional[str] = Field(None, examples=["Finance"])
+    profession: Optional[str] = Field(None, examples=["Data Analyst"])
+    career_interest: Optional[str] = Field(None, examples=["Machine Learning Engineer"])
+    current_knowledge_level: Optional[Dict[str, str]] = Field(default_factory=dict, examples=[{"Python": "Intermediate"}])
+    areas_of_interest: Optional[List[str]] = Field(default_factory=list, examples=[["NLP"]])
+    learning_goals: Optional[str] = Field(None, examples=["Build a portfolio piece."])
+    preferred_tutor_persona: Optional[str] = Field("Friendly and encouraging") # For AI Tutor call
 
 class ProjectPreferences(BaseModel):
     difficulty_level: Optional[str] = Field("intermediate", examples=["beginner", "intermediate", "advanced"])
-    preferred_technologies: Optional[List[str]] = Field(default_factory=list, examples=[["Python", "FastAPI"], ["JavaScript", "React"]])
-    project_type_focus: Optional[str] = Field(None, examples=["Portfolio Piece", "Skill Enhancement", "Exploratory Research"])
-    time_commitment_hours_estimate: Optional[int] = Field(None, examples=[20, 40], ge=5, le=100)
-
+    preferred_technologies: Optional[List[str]] = Field(default_factory=list, examples=[["Python", "FastAPI"]])
+    project_type_focus: Optional[str] = Field(None, examples=["Portfolio Piece"])
+    time_commitment_hours_estimate: Optional[int] = Field(None, examples=[20], ge=5, le=100)
 
 class ProjectIdeaGenerationRequest(BaseModel):
     user_profile_snapshot: UserProfileSnapshotForProjects
     preferences: Optional[ProjectPreferences] = Field(default_factory=ProjectPreferences)
-    number_of_ideas: Optional[int] = Field(1, ge=1, le=3) # Max 3 ideas per request for this agent
+    number_of_ideas: Optional[int] = Field(1, ge=1, le=3)
+    language_code: Optional[str] = Field(DEFAULT_LANGUAGE, examples=SUPPORTED_LANGUAGES)
 
+    @validator('language_code')
+    def validate_language_code(cls, v):
+        if v not in SUPPORTED_LANGUAGES:
+            logger.warning(f"Unsupported language_code '{v}' in ProjectIdeaGenerationRequest. Falling back to default '{DEFAULT_LANGUAGE}'.")
+            return DEFAULT_LANGUAGE
+        return v
 
 class GeneratedProjectTask(BaseModel):
     task_id: int = Field(..., ge=1)
     description: str = Field(..., min_length=10)
-    estimated_sub_duration: Optional[str] = Field(None, examples=["2-4 hours", "1 day"])
-
+    estimated_sub_duration: Optional[str] = Field(None, examples=["2-4 hours"])
 
 class GeneratedProjectIdea(BaseModel):
-    request_id: Optional[str] = None # Can be linked to an initial request ID if provided by caller
-    project_idea_id: str = Field(default_factory=lambda: f"proj_idea_{uuid.uuid4().hex[:10]}")
-    
-    title: str = Field(..., min_length=5, examples=["Personalized Financial Health Dashboard for Millennials"])
-    subtitle: Optional[str] = Field(None, min_length=10, examples=["An interactive web app to track spending, set budgets, and visualize financial progress using Plaid API integration."])
-    description_html: str = Field(..., min_length=50, examples=["<p>This project aims to develop a comprehensive financial health dashboard tailored for young adults...</p>"])
-    difficulty_level: str = Field(..., examples=["intermediate"])
-    estimated_duration: Optional[str] = Field(None, examples=["25-35 hours", "Approx. 2-3 weeks part-time"])
-    
-    learning_objectives_html: List[str] = Field(default_factory=list, min_items=2, examples=[["<li>Understand and implement secure API integration (e.g., Plaid).</li>"], ["<li>Master data visualization techniques for financial data using Plotly Dash.</li>"]])
-    requirements_html: Optional[List[str]] = Field(default_factory=list, min_items=1, examples=[["<li>Intermediate Python skills (FastAPI/Flask preferred).</li>"], ["<li>Basic understanding of REST APIs and JSON.</li>"]])
-    target_audience_html: Optional[List[str]] = Field(default_factory=list, examples=[["<li>Individuals in their 20s-30s looking to manage personal finances.</li>"], ["<li>Developers interested in FinTech applications.</li>"]])
-    
-    key_tasks: List[GeneratedProjectTask] = Field(default_factory=list, min_items=3)
-    suggested_technologies: List[str] = Field(default_factory=list, min_items=1, examples=[["Python", "FastAPI", "Plotly Dash", "Plaid API"]])
-    
-    personalization_rationale: Optional[str] = Field(None, min_length=20, examples=["Given your interest in FinTech and 'Intermediate' Python knowledge, this project offers a practical way to apply API skills and data visualization."])
-    potential_challenges: Optional[List[str]] = Field(default_factory=list, examples=[["Managing Plaid API rate limits and sandbox data variability."], ["Ensuring data security and privacy for financial information."]])
-    assessment_rubric_preview_html: Optional[List[str]] = Field(default_factory=list, min_items=2, examples=[["<li>Core functionality (Plaid integration, dashboard display): 50%</li>"], ["<li>Code quality and API design: 30%</li>"]])
-    real_world_application_examples: Optional[List[str]] = Field(default_factory=list, examples=[["Serves as a base for a personal finance SaaS product."], ["Demonstrates skills valuable for FinTech developer roles."]])
-
+    project_idea_id: str = Field(default_factory=lambda: f"proj_idea_{uuid.uuid4().hex[:12]}")
+    title: str
+    subtitle: Optional[str] = None
+    description_html: str
+    difficulty_level: str
+    estimated_duration: Optional[str] = None
+    learning_objectives_html: List[str] = Field(min_items=1)
+    requirements_html: Optional[List[str]] = Field(min_items=1)
+    target_audience_html: Optional[List[str]] = None
+    key_tasks: List[GeneratedProjectTask] = Field(min_items=1)
+    suggested_technologies: List[str] = Field(min_items=1)
+    personalization_rationale: Optional[str] = None
+    potential_challenges: Optional[List[str]] = None
+    # This is what the assessment LLM will use as a base.
+    assessment_rubric_preview_html: List[str] = Field(min_items=1, description="Key criteria for successful completion.")
+    real_world_application_examples: Optional[List[str]] = None
+    language_code: str # Store the language this idea was generated in
 
 class ProjectIdeaGenerationResponse(BaseModel):
     generated_ideas: List[GeneratedProjectIdea]
     debug_info: Optional[Dict[str, Any]] = None
 
+# --- Models for Project Assessment ---
+class ProjectSubmissionDetails(BaseModel):
+    github_url: Optional[HttpUrl] = Field(None, description="URL to the user's project repository.")
+    # Allow for direct code submission if GitHub URL is not available or for smaller snippets
+    # For large codebases, GitHub URL is preferred.
+    code_files: Optional[Dict[str, str]] = Field(None, description="Dictionary of filename: code_content.")
+    textual_summary: Optional[str] = Field(None, description="User's summary of their approach and solution.")
+    # Add any other fields that represent the user's submitted work
+
+    @validator('textual_summary', always=True)
+    def check_submission_content(cls, v, values):
+        if not values.get('github_url') and not values.get('code_files') and not v:
+            raise ValueError("At least one of github_url, code_files, or textual_summary must be provided for assessment.")
+        return v
+
+class ProjectAssessmentRequest(BaseModel):
+    user_id: str
+    project_idea: GeneratedProjectIdea # The original project idea details
+    submission: ProjectSubmissionDetails
+    language_code: Optional[str] = Field(DEFAULT_LANGUAGE, examples=SUPPORTED_LANGUAGES)
+    # user_profile_snapshot: UserProfileSnapshotForProjects # Needed for AI Tutor call if triggered
+
+    @validator('language_code')
+    def validate_language_code(cls, v):
+        if v not in SUPPORTED_LANGUAGES:
+            logger.warning(f"Unsupported language_code '{v}' in ProjectAssessmentRequest. Falling back to default '{DEFAULT_LANGUAGE}'.")
+            return DEFAULT_LANGUAGE
+        return v
+    
+class ProjectAssessmentResult(BaseModel):
+    assessment_id: str = Field(default_factory=lambda: f"assess_{uuid.uuid4().hex[:12]}")
+    project_idea_id: str
+    user_id: str
+    score: float = Field(..., ge=0.0, le=100.0, description="Overall score from 0 to 100.")
+    is_passed: bool
+    feedback_summary_html: str
+    detailed_feedback_points_html: List[str] = Field(default_factory=list)
+    areas_for_improvement_html: List[str] = Field(default_factory=list)
+    positive_points_html: List[str] = Field(default_factory=list)
+    tutor_session_triggered: bool = False
+    language_code: str # Language of the feedback
+
+class ProjectAssessmentResponse(BaseModel):
+    assessment_result: ProjectAssessmentResult
+    debug_info: Optional[Dict[str, Any]] = None
 
 # --- FastAPI Application ---
 app = FastAPI(
-    title="Uplas AI Project Idea Generator",
-    description="Generates personalized real-world project ideas using a (mocked) LLM for idea generation.",
-    version="0.2.0" # Version update for more refined mock
+    title="Uplas AI Project Generator & Assessor (Vertex AI)",
+    description="Generates personalized project ideas and assesses submissions using Google Cloud Vertex AI.",
+    version="0.2.0"
 )
 
-# --- Mock LLM Client for Project Idea Generation (Refined as per previous step) ---
-MOCKED_PROJECT_LLM_NAME = "mocked-gemini-pro-project-gen-v2.2" # From previous refinement
+# --- Vertex AI LLM Client Logic (Similar to AI Tutor's) ---
+class VertexAILLMClient:
+    def __init__(self, model_name: str):
+        self.model_name = model_name
 
-class MockProjectLLMClient:
-    async def generate_ideas(
+    async def generate_structured_response(
         self,
-        user_profile: UserProfileSnapshotForProjects,
-        preferences: ProjectPreferences,
-        num_ideas: int
-    ) -> List[Dict[str, Any]]:
-        print(f"\n--- Mock Project LLM ({MOCKED_PROJECT_LLM_NAME}) Generating {num_ideas} Ideas ---")
-        print(f"User Profile: Industry='{user_profile.industry}', Profession='{user_profile.profession}', Interests='{user_profile.areas_of_interest}', Knowledge='{user_profile.current_knowledge_level}'")
-        print(f"Preferences: Difficulty='{preferences.difficulty_level}', Tech='{preferences.preferred_technologies}', Focus='{preferences.project_type_focus}'")
-        print("---------------------------------------------------------------------\n")
+        system_prompt: str,
+        user_query_or_context: str, # For project ideas, this is the main prompt; for assessment, it's the combined context
+        max_output_tokens: int,
+        temperature: float = 0.6, # Slightly lower for more factual/structured output
+        top_p: float = 0.9,
+        top_k: int = 30,
+        response_schema: Optional[Dict[str, Any]] = None # For Gemini JSON mode
+    ) -> Dict[str, Any]:
+        if not GCP_PROJECT_ID:
+            raise EnvironmentError("GCP_PROJECT_ID is not configured.")
 
-        generated_project_ideas = []
-        base_project_templates = [
-            {"title_template": "Interactive {domain} Data Visualization Dashboard", "domain": "Data Analytics", "keywords": ["dashboard", "visualization"], "default_tech": ["Plotly Dash", "Streamlit", "Python"]},
-            {"title_template": "Real-Time {asset_type} Monitoring App", "domain": "FinTech/IoT", "keywords": ["real-time", "monitoring", "api"], "default_tech": ["WebSocket", "FastAPI", "Python"]},
-            {"title_template": "{commerce_type} Product Recommendation Engine", "domain": "E-commerce/AI", "keywords": ["recommendation", "machine learning"], "default_tech": ["Scikit-learn", "Python", "Pandas"]},
-            {"title_template": "Personalized {content_type} News Aggregator", "domain": "Web/Content", "keywords": ["aggregator", "nlp", "scraping"], "default_tech": ["BeautifulSoup", "Flask", "Python"]},
-            {"title_template": "AI-Powered {health_area} Symptom Checker (Conceptual)", "domain": "HealthTech/AI", "keywords": ["ai", "chatbot", "health"], "default_tech": ["Rasa/Dialogflow (Conceptual)", "Knowledge Base"]},
-            {"title_template": "Sustainable {lifestyle_aspect} Planner", "domain": "Lifestyle/Web", "keywords": ["sustainability", "planning", "user data"], "default_tech": ["React", "Firebase"]},
-            {"title_template": "Local {interest_type} Discovery Platform API", "domain": "Social/API", "keywords": ["social", "geo-location", "events", "api design"], "default_tech": ["Node.js/Express", "MongoDB Atlas"]},
-            {"title_template": "{activity_type} Challenge Tracker & Leaderboard", "domain": "Health/Social", "keywords": ["gamification", "tracking", "mobile-friendly web"], "default_tech": ["Flutter/React Native (Conceptual for Web)", "Supabase"]},
-            {"title_template": "Educational {subject} Quiz Game Builder", "domain": "EdTech/GameDev", "keywords": ["education", "game", "interactive content"], "default_tech": ["Phaser.js/Godot (Conceptual)", "JSON for quizzes"]},
-            {"title_template": "Community {skill_type} Skill-Share Network Backend", "domain": "Social/Backend", "keywords": ["community", "skill sharing", "database design"], "default_tech": ["Django REST Framework", "PostgreSQL"]}
-        ]
+        from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
+
+        model = GenerativeModel(
+            self.model_name,
+            system_instruction=[Part.from_text(system_prompt)] if system_prompt else None
+        )
         
-        random.shuffle(base_project_templates)
+        generation_config = GenerationConfig(
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+        if response_schema:
+            generation_config.response_mime_type = "application/json"
+            generation_config.response_schema = response_schema
 
-        for i in range(min(num_ideas, len(base_project_templates))):
-            idea_id_suffix = uuid.uuid4().hex[:4]
-            template = base_project_templates[i]
-            base_title = template["title_template"]
-            domain = template["domain"]
+
+        llm_response = await model.generate_content_async(
+            [Part.from_text(user_query_or_context)],
+            generation_config=generation_config
+            # Add safety_settings if needed
+        )
+
+        response_text = ""
+        prompt_tokens = 0
+        response_tokens = 0
+
+        if llm_response.candidates:
+            candidate = llm_response.candidates[0]
+            if candidate.content and candidate.content.parts:
+                response_text = "".join([part.text for part in candidate.content.parts if part.text])
             
-            difficulty = preferences.difficulty_level or random.choice(["beginner", "intermediate", "advanced"])
-            
-            title_fillers = {
-                "{domain}": user_profile.industry or domain,
-                "{asset_type}": random.choice(["Stock", "Crypto", "Sensor Data"]),
-                "{commerce_type}": random.choice(["Retail", "Service Booking", "Digital Product"]),
-                "{content_type}": random.choice(["Tech News", "Financial Insights", "Local Happenings"]),
-                "{health_area}": random.choice(["General Wellness Query", "Fitness Activity Log", "Mental Health Check-in"]),
-                "{lifestyle_aspect}": random.choice(["Meal Planning", "Sustainable Travel", "Home Energy Use"]),
-                "{interest_type}": random.choice(["Community Event", "Hobby Group Finder", "Local Business Showcase"]),
-                "{activity_type}": random.choice(["Fitness Steps", "Coding Hours", "Language Learning"]),
-                "{subject}": random.choice(["Python Programming", "World History", "Calculus Concepts"]),
-                "{skill_type}": random.choice(["Coding Language", "Foreign Language", "Crafting Skill"])
-            }
-            current_project_title = base_title
-            for placeholder, value in title_fillers.items():
-                current_project_title = current_project_title.replace(placeholder, value)
-            
-            project_title = f"{current_project_title}"
-            personalization_notes_list = []
-
-            current_industry = user_profile.industry or domain
-            if user_profile.industry:
-                project_title = f"{user_profile.industry}-Focused: {current_project_title}"
-                personalization_notes_list.append(f"Directly applicable to the {user_profile.industry} sector.")
-            elif domain and domain not in project_title :
-                 project_title = f"{domain}-Related: {current_project_title}"
-                 personalization_notes_list.append(f"Relevant to the {domain} domain.")
-
-            if user_profile.profession:
-                project_title += f" (Designed for a {user_profile.profession})"
-                personalization_notes_list.append(f"Considers the perspective and potential skill application for a {user_profile.profession}.")
-            
-            user_interests = user_profile.areas_of_interest or []
-            if user_interests:
-                interest = random.choice(user_interests) if user_interests else template.get("keywords",["a key topic"])[0]
-                project_title += f" (incorporating {interest.title()})"
-                personalization_notes_list.append(f"Allows exploration of your stated interest in {interest}.")
-            elif template.get("keywords"):
-                 personalization_notes_list.append(f"Touches upon themes like {', '.join(template['keywords'])}.")
-            else:
-                personalization_notes_list.append("A generally useful project to build foundational and practical skills.")
-
-            tech_stack = []
-            if preferences.preferred_technologies:
-                tech_stack.extend(preferences.preferred_technologies)
-            else: 
-                tech_stack.extend(template.get("default_tech", ["Python", "Basic Web Tech"]))
-
-            if any(kw in project_title.lower() for kw in ["web", "dashboard", "platform", "aggregator", "network", "api", "app"]):
-                if not any(t.lower() in map(str.lower, tech_stack) for t in ["FastAPI", "Flask", "Django", "React", "Vue.js", "Node.js", "Express", "HTML", "CSS"]):
-                    tech_stack.append(random.choice(["FastAPI", "Flask", "Node.js/Express", "React"]))
-            if any(kw in project_title.lower() for kw in ["data", "ai", "system", "monitoring", "recommendation", "analyzer", "engine", "machine learning", "nlp"]):
-                 if not any(t.lower() in map(str.lower, tech_stack) for t in ["Pandas", "Scikit-learn", "TensorFlow", "PyTorch", "NLTK"]):
-                    tech_stack.append("Pandas")
-                    if "ai" in project_title.lower() or "recommendation" in project_title.lower() or "nlp" in project_title.lower() or "machine learning" in project_title.lower():
-                         tech_stack.append(random.choice(["Scikit-learn", "NLTK", "spaCy"]))
-            
-            tech_stack = sorted(list(set(tech_stack)))
-
-            description = f"<p>Embark on a '{difficulty}' level project to develop: '{project_title}'. "
-            description += f"This endeavor will provide you with substantial hands-on experience with a modern tech stack including {', '.join(tech_stack)}. "
-            if user_profile.learning_goals:
-                description += f"This project is designed to help you achieve your learning goal: '{user_profile.learning_goals[:70]}...'.</p>"
-            else:
-                description += "It's an excellent opportunity to build a practical, portfolio-worthy application while deepening your technical expertise by tackling a real-world inspired challenge.</p>"
-
-            estimated_hours = preferences.time_commitment_hours_estimate or random.randint(15, 50)
-            learning_objectives = [
-                f"<li>Gain practical, hands-on experience designing and implementing solutions with {', '.join(tech_stack)}.</li>",
-                f"<li>Develop a tangible project suitable for showcasing in your portfolio, with a focus on {preferences.project_type_focus or 'real-world problem solving and application development'}.</li>",
-                f"<li>Enhance your skills in critical areas such as {random.choice(['API development and integration', 'data processing and analysis', 'interactive frontend design', 'backend system architecture', 'algorithmic problem-solving'])}.</li>"
-            ]
-            if user_interests:
-                learning_objectives.append(f"<li>Deepen your understanding and application of concepts related to your interest in {random.choice(user_interests)}.</li>")
-            else:
-                learning_objectives.append(f"<li>Explore key concepts within the {domain} domain through direct, practical application and development.</li>")
-
-            idea = {
-                "request_id": f"req_{user_profile.user_id}_{uuid.uuid4().hex[:4]}",
-                "project_idea_id": f"idea_{idea_id_suffix}_{i+1}",
-                "title": project_title,
-                "subtitle": f"A {difficulty} project focusing on {domain}, utilizing {tech_stack[0] if tech_stack else 'key technologies'} to address a real-world inspired scenario.",
-                "description_html": description,
-                "difficulty_level": difficulty,
-                "estimated_duration": f"Approx. {estimated_hours} - {estimated_hours + random.randint(5,15)} hours ({random.choice(['1-2 weeks', '2-3 weeks', '3-4 weeks'])} part-time)",
-                "learning_objectives_html": learning_objectives,
-                "requirements_html": [
-                    f"<li>{user_profile.current_knowledge_level.get(tech_stack[0].split('/')[0].strip().split(' ')[0], 'Basic to intermediate understanding of') if tech_stack and user_profile.current_knowledge_level else 'Fundamental programming concepts are recommended'}.</li>", 
-                    "<li>A personal computer with internet access and a suitable code editor/IDE (e.g., VS Code).</li>",
-                    "<li>A proactive learning attitude and the ability to research solutions independently using documentation and online resources.</li>"
-                ],
-                "key_tasks": [
-                    {"task_id": 1, "description": "Phase 1: Project Initialization & Detailed Planning - Refine project scope, select specific tools/libraries from suggestions, outline core features, set up Git repository, and configure your development environment (virtual environment, linters).", "estimated_sub_duration": "2-4 hours"},
-                    {"task_id": 2, "description": f"Phase 2: Core Logic Implementation - Develop the primary backend functionalities and algorithms using {tech_stack[0] if tech_stack else 'your chosen primary language/framework'}. Focus on creating clean, modular, and well-commented code for main functionalities."},
-                    {"task_id": 3, "description": "Phase 3: Data Handling & Integration (if applicable) - Design necessary data schemas (if using a database). Implement data sourcing (e.g., from external APIs, CSV files, or creating mock data) and any required data transformation, cleaning, or storage logic."},
-                    {"task_id": 4, "description": "Phase 4: API / User Interface Development (if applicable) - Build the necessary API endpoints for interaction if it's a backend-focused project, or develop a basic, functional user interface to demonstrate the project's capabilities if it's full-stack or frontend-focused."},
-                    {"task_id": 5, "description": "Phase 5: Testing, Refinement & Basic Documentation - Write unit or integration tests for critical components to ensure correctness. Debug issues, refine features based on self-review, and create a README.md with setup, usage, and key design decisions."}
-                ],
-                "suggested_technologies": tech_stack,
-                "personalization_rationale": " ".join(personalization_notes_list),
-                "assessment_rubric_preview_html": [
-                    "<li>Successful Implementation of Core Functionality & All Key Tasks (50%)</li>", 
-                    f"<li>Code Quality (Readability, Organization, Modularity) & Adherence to Best Practices for {tech_stack[0] if tech_stack else 'Selected Technologies'} (30%)</li>",
-                    "<li>Project Documentation (Comprehensive README.md, Clear Code Comments) and (Optional but Highly Recommended) a Brief Video Presentation or Live Demo of the Working Project (20%)</li>"
-                ],
-                "real_world_application_examples": [
-                    f"The principles and technologies used in this project are directly applicable in the {current_industry} sector for developing innovative tools related to [example real-world task relevant to the project domain and industry].",
-                    f"Completing this project can significantly enhance your portfolio, demonstrating practical skills for roles such as a {user_profile.career_interest or 'Software Developer/Engineer'}, especially if you aim to work with {', '.join(tech_stack)}."
-                ]
-            }
-            generated_project_ideas.append(idea)
+            if hasattr(llm_response, 'usage_metadata') and llm_response.usage_metadata:
+                prompt_tokens = llm_response.usage_metadata.prompt_token_count
+                response_tokens = llm_response.usage_metadata.candidates_token_count
         
-        return generated_project_ideas
+        # If JSON mode was used, response_text should be a JSON string.
+        # The caller will be responsible for parsing it.
+        return {
+            "response_text": response_text,
+            "prompt_token_count": prompt_tokens,
+            "response_token_count": response_tokens
+        }
 
-mock_project_llm = MockProjectLLMClient()
+project_idea_llm = VertexAILLMClient(model_name=PROJECT_LLM_MODEL_NAME)
+assessment_llm = VertexAILLMClient(model_name=ASSESSMENT_LLM_MODEL_NAME)
 
-# --- Helper for Prompt Construction (Conceptual for Real LLM) ---
-def construct_project_gen_prompt(
-    user_profile: UserProfileSnapshotForProjects,
-    preferences: ProjectPreferences,
-    num_ideas: int
-) -> str:
-    # System Preamble
-    prompt = (
-        "You are an AI assistant specialized in generating personalized, real-world project ideas "
-        "for users looking to enhance their skills and build their portfolios. For each idea, you must provide "
-        "all specified fields in a structured JSON format. Ensure the projects are engaging, practical, "
-        "and offer clear learning objectives. Personalize heavily based on user's industry, profession, interests, and knowledge.\n\n"
+
+# --- Prompt Construction ---
+def construct_project_gen_prompt_system(language_code: str) -> str:
+    return (
+        "You are an AI expert in crafting personalized, real-world project ideas for learners of various skill levels. "
+        "Your goal is to generate engaging and practical projects that help users build their portfolio and enhance specific skills. "
+        f"IMPORTANT: All textual output (titles, descriptions, tasks, etc.) MUST be in the language: {language_code}. "
+        "You will be provided with user profile details, project preferences, and the number of ideas to generate. "
+        "Respond ONLY with a valid JSON list, where each item in the list is a JSON object strictly adhering to the provided schema for a project idea. "
+        "Do not include any introductory or concluding text outside this JSON list."
     )
 
-    # User Profile Section
-    prompt += "USER PROFILE:\n"
-    prompt += f"- User ID (for reference only): {user_profile.user_id}\n"
-    if user_profile.industry: prompt += f"- Current or Target Industry: {user_profile.industry}\n"
-    if user_profile.profession: prompt += f"- Current or Target Profession/Role: {user_profile.profession}\n"
-    if user_profile.career_interest: prompt += f"- Stated Career Interests: {user_profile.career_interest}\n"
-    if user_profile.current_knowledge_level:
-        knowledge_str = ", ".join([f"{k}: {v}" for k, v in user_profile.current_knowledge_level.items()])
-        if knowledge_str: prompt += f"- Self-Assessed Knowledge Levels: {knowledge_str}\n"
-    if user_profile.areas_of_interest:
-        prompt += f"- Specific Areas of Interest: {', '.join(user_profile.areas_of_interest)}\n"
-    if user_profile.learning_goals:
-        prompt += f"- Stated Learning Goals: {user_profile.learning_goals}\n"
+def construct_project_gen_prompt_user(
+    user_profile: UserProfileSnapshotForProjects,
+    preferences: ProjectPreferences,
+    num_ideas: int,
+    language_code: str # For placeholders in the schema example
+) -> str:
+    # Define the Pydantic model as a JSON schema for the LLM
+    # This helps Gemini understand the desired output structure for JSON mode
+    project_idea_schema = GeneratedProjectIdea.model_json_schema()
 
-    # Project Preferences Section
-    prompt += "\nUSER'S PROJECT PREFERENCES:\n"
-    if preferences.difficulty_level: prompt += f"- Desired Difficulty Level: {preferences.difficulty_level} (Suggest projects matching this, or state if not possible and suggest alternatives based on their knowledge level).\n"
-    if preferences.preferred_technologies:
-        prompt += f"- Preferred Technologies: {', '.join(preferences.preferred_technologies)}. If not suitable for the idea, suggest alternatives but try to incorporate if possible, or explain why an alternative is better for their goals/knowledge.\n"
-    else:
-        prompt += "- Preferred Technologies: User is open to suggestions; choose technologies appropriate for the project and user's profile (especially considering their current knowledge and interests).\n"
-    if preferences.project_type_focus: prompt += f"- Desired Project Focus: {preferences.project_type_focus}\n"
-    if preferences.time_commitment_hours_estimate:
-        prompt += f"- User's Estimated Time Commitment: Around {preferences.time_commitment_hours_estimate} hours. Tailor project scope and number of key tasks accordingly.\n"
-
-    # Request for Ideas and Output Structure
-    prompt += f"\nTASK: Generate {num_ideas} distinct project idea(s) based on the user profile and preferences above.\n"
-    prompt += "For EACH project idea, provide the output as a SINGLE, VALID JSON object with the following EXACT fields and value types (use HTML for list items in appropriate fields, e.g., '<li>Objective 1</li>'):\n"
-    prompt += """
-{
-  "project_idea_id": "string (a unique identifier you generate for this idea, e.g., idea_xxxx)",
-  "title": "string (catchy, descriptive, and highly personalized project title incorporating user's industry/profession/interests; avoid generic titles)",
-  "subtitle": "string (a brief, engaging one-sentence summary of the project, highlighting personalization and key tech/skill)",
-  "description_html": "string (detailed project description, 2-4 paragraphs, using <p> and <ul> for formatting. Explain what the project is about, its core challenge, and its value *to this specific user* considering their profile.)",
-  "difficulty_level": "string (choose one: 'beginner', 'intermediate', 'advanced', matching user preference OR justifying if different based on their stated knowledge level and the project's complexity)",
-  "estimated_duration": "string (e.g., '15-20 hours', 'Approx. 3 weeks part-time', aligning with user's time commitment if provided, otherwise a reasonable estimate for the scope)",
-  "learning_objectives_html": ["string (e.g., '<li>Master asynchronous programming in Python, which is highly relevant for your interest in building scalable web services for the {user_profile.industry or 'tech'} sector.</li>')", "string (e.g., '<li>Learn to integrate third-party APIs effectively, a key skill for a {user_profile.profession or 'developer'} and useful for your goal of {user_profile.learning_goals or 'building X'}.</li>')"],
-  "requirements_html": ["string (e.g., '<li>{user_profile.current_knowledge_level.get("Python", "Basic Python proficiency")} (variables, data types, loops, functions). If 'Beginner', suggest starting with foundational concepts.</li>')", "string (e.g., '<li>Familiarity with JSON data structures, which will be useful for your interest in {user_profile.areas_of_interest[0] if user_profile.areas_of_interest else 'API interaction'}.</li>')", "string (e.g., '<li>Access to a computer with internet, a code editor (like VS Code), and Git for version control.</li>')"],
-  "target_audience_html": [ // Who is this project for, described in relation to the user
-    "string (HTML list item: e.g., 'A {user_profile.profession or 'learner'} like you, aiming to strengthen their {user_profile.areas_of_interest[0] if user_profile.areas_of_interest else 'core development skills'} within the {user_profile.industry or 'chosen'} domain.')",
-    "string (HTML list item: e.g., 'Individuals looking to build a compelling portfolio piece that demonstrates practical application of [key technology/skill from project].')"
-  ],
-  "key_tasks": [ // 3-6 clear, actionable, and somewhat sequential tasks
-    {"task_id": 1, "description": "string (e.g., 'Project Planning & Environment Setup: Clearly define the project scope based on this idea. Choose specific tools/libraries from the suggestions. Initialize your project repository with Git and set up a dedicated virtual environment.')", "estimated_sub_duration": "string (e.g., '1-3 hours')"},
-    {"task_id": 2, "description": "string (e.g., 'Core Logic Implementation - Part 1: Develop the primary backend functionalities and algorithms using {preferences.preferred_technologies[0] if preferences.preferred_technologies else 'Python'}. Focus on creating modular and testable functions/classes.')", "estimated_sub_duration": "string (e.g., '5-8 hours')"},
-    {"task_id": 3, "description": "string (e.g., 'Data Handling & Integration: Implement data sourcing (e.g., from a mock API, CSV, or a simple database schema if needed) and any necessary data transformation or cleaning logic.')", "estimated_sub_duration": "string (e.g., '4-6 hours')"}
-    // ... more tasks covering UI (if any), testing, basic documentation.
-  ],
-  "suggested_technologies": [ // Be specific, include versions if important, and justify briefly if not in user's preferences
-    "string (e.g., 'Python 3.9+ (for its extensive libraries and readability)')",
-    "string (e.g., 'FastAPI 0.100+ (for building efficient APIs, aligning with your interest in web services)')",
-    "string (e.g., 'Pandas (if data manipulation is involved, essential for data tasks)')"
-    // ... list other key frameworks, libraries, or tools.
-  ],
-  "personalization_rationale": "string (CRUCIAL: 2-3 sentences explaining *precisely* why this project, its domain, and its technologies are an excellent match for *this specific user*. Reference their industry, profession, current knowledge levels (e.g., 'builds on your Intermediate Python'), areas of interest, and learning goals. Be very specific in the connection.)",
-  "potential_challenges": [ // 2-3 potential hurdles user might face
-    "string (e.g., 'Debugging asynchronous code if using FastAPI/asyncio for the first time, requiring careful study of async concepts.')",
-    "string (e.g., 'Finding or generating a suitable and diverse dataset if the project involves data analysis or ML.')",
-    "string (e.g., 'Scope creep: It might be tempting to add too many features; focus on the core tasks first.')"
-  ],
-  "assessment_rubric_preview_html": [ // High-level criteria for success, 3-4 points
-    "string (HTML list item: e.g., '<li>Successful implementation and demonstration of all key tasks and core project functionality (50%)</li>')",
-    "string (HTML list item: e.g., '<li>Code quality, organization, readability, and adherence to best practices for the suggested technologies (30%)</li>')",
-    "string (HTML list item: e.g., '<li>Clear project documentation (README with setup, usage, and key design decisions) and (if applicable) a brief video presentation of the working project (20%)</li>')"
-  ],
-  "real_world_application_examples": [ // 1-2 examples connecting project to real world
-      "string (e.g., 'This type of system is used by companies like [Example Company] for [their use case], relevant to your interest in {user_profile.industry or 'the field'}.')",
-      "string (e.g., 'The skills gained can be directly applied to roles such as {user_profile.career_interest or 'a relevant job title'}.')"
-  ]
-}
-"""
-    prompt += "\nIMPORTANT: Ensure the entire response is a list of these valid JSON objects. Do not include any introductory or concluding text outside this JSON list structure. Each field must be populated appropriately. The personalization_rationale is key.\n"
-    return prompt # This is a truncated representation; the full prompt from earlier is intended here.
+    # Simplified user prompt, focusing on the data and the request for JSON.
+    # The detailed instructions about fields are now part of the schema.
+    user_prompt_parts = [
+        f"Please generate {num_ideas} distinct project idea(s) in {language_code} based on the following user profile and preferences.",
+        "--- User Profile ---",
+        json.dumps(user_profile.model_dump(exclude_none=True), indent=2),
+        "--- Project Preferences ---",
+        json.dumps(preferences.model_dump(exclude_none=True), indent=2),
+        "\nEnsure each generated project idea strictly follows this JSON schema:",
+        # json.dumps(project_idea_schema, indent=2), # The schema is passed to GenerationConfig
+        "The 'language_code' field in each generated idea should be set to the target language of generation, which is: " + language_code
+    ]
+    return "\n".join(user_prompt_parts)
 
 
-# --- API Endpoint ---
+def construct_project_assessment_prompt_system(language_code: str) -> str:
+    return (
+        "You are an AI expert project assessor. Your task is to evaluate a user's project submission against the original project idea's requirements and rubric. "
+        "Provide a score (0-100), determine if it passes (>=75%), and offer constructive, detailed feedback. "
+        f"IMPORTANT: All your feedback (summary, detailed points, etc.) MUST be in the language: {language_code}. "
+        "Respond ONLY with a single, valid JSON object strictly adhering to the provided schema for an assessment result. "
+        "Do not include any introductory or concluding text outside this JSON object."
+    )
+
+def construct_project_assessment_prompt_user(
+    original_project: GeneratedProjectIdea,
+    submission: ProjectSubmissionDetails,
+    language_code: str # For placeholders in schema
+) -> str:
+    # assessment_result_schema = ProjectAssessmentResult.model_json_schema() # Passed to GenerationConfig
+
+    user_prompt_parts = [
+        f"Please assess the following user project submission in {language_code}.",
+        "--- Original Project Idea Description & Rubric ---",
+        f"Title: {original_project.title}",
+        f"Description: {original_project.description_html}",
+        f"Key Tasks Expected: {json.dumps([task.description for task in original_project.key_tasks])}",
+        f"Assessment Rubric Preview: {json.dumps(original_project.assessment_rubric_preview_html)}",
+        "--- User's Project Submission ---",
+        f"GitHub URL: {submission.github_url or 'Not provided'}",
+        f"Submitted Code Files: {json.dumps(submission.code_files, indent=2) if submission.code_files else 'Not provided'}",
+        f"User's Summary: {submission.textual_summary or 'Not provided'}",
+        "\nBased on the above, provide your assessment. Consider completeness, correctness, code quality (if applicable), and adherence to the project's goals.",
+        "The 'language_code' field in your assessment result JSON should be set to: " + language_code
+    ]
+    return "\n".join(user_prompt_parts)
+
+# --- Helper to call AI Tutor ---
+async def trigger_ai_tutor_for_failed_assessment(
+    user_id: str,
+    user_profile: UserProfileSnapshotForProjects, # Get this from the original assessment request or fetch
+    project_title: str,
+    assessment_feedback: str,
+    language_code: str
+) -> bool:
+    if not AI_TUTOR_AGENT_URL:
+        logger.warning("AI_TUTOR_AGENT_URL not set. Cannot trigger AI Tutor for failed assessment.")
+        return False
+
+    tutor_query = (
+        f"I need help with my project '{project_title}'. I didn't pass the assessment. "
+        f"The feedback I received was: '{assessment_feedback}'. Can you help me understand where I went wrong and how to improve?"
+    )
+    tutor_payload = {
+        "user_id": user_id,
+        "query_text": tutor_query,
+        "user_profile_snapshot": { # Construct the snapshot for the tutor
+            "industry": user_profile.industry,
+            "profession": user_profile.profession,
+            "country": None, # Add if available in UserProfileSnapshotForProjects
+            "city": None, # Add if available
+            "preferred_tutor_persona": user_profile.preferred_tutor_persona,
+            "current_knowledge_level": user_profile.current_knowledge_level,
+            "career_interest": user_profile.career_interest,
+            "learning_goals": user_profile.learning_goals
+        },
+        "language_code": language_code,
+        "context": {
+            "current_project_title": project_title,
+            "project_assessment_feedback": assessment_feedback # Pass the feedback directly
+        }
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(f"{AI_TUTOR_AGENT_URL}/v1/ask-tutor", json=tutor_payload)
+            response.raise_for_status() # Will raise an exception for 4XX/5XX responses
+            logger.info(f"Successfully triggered AI Tutor for user {user_id}, project '{project_title}'. Tutor response status: {response.status_code}")
+            return True
+    except Exception as e:
+        logger.error(f"Failed to trigger AI Tutor for user {user_id}, project '{project_title}'. Error: {e}", exc_info=True)
+        return False
+
+# --- API Endpoints ---
 @app.post("/v1/generate-project-ideas", response_model=ProjectIdeaGenerationResponse, summary="Generate Personalized Project Ideas")
 async def generate_project_ideas_endpoint(request_data: ProjectIdeaGenerationRequest):
     processing_start_time = time.perf_counter()
+    effective_language_code = request_data.language_code or DEFAULT_LANGUAGE
 
-    conceptual_llm_prompt = construct_project_gen_prompt( # Construct conceptual prompt for debugging/logging
+    system_prompt = construct_project_gen_prompt_system(effective_language_code)
+    user_prompt = construct_project_gen_prompt_user(
         user_profile=request_data.user_profile_snapshot,
         preferences=request_data.preferences,
-        num_ideas=request_data.number_of_ideas
+        num_ideas=request_data.number_of_ideas,
+        language_code=effective_language_code
     )
     
+    # Define the response schema for the LLM (for JSON mode)
+    # This tells Gemini to structure its output as a list of GeneratedProjectIdea objects
+    # We need to get the schema for the *items* in the list.
+    list_of_ideas_schema = {
+        "type": "array",
+        "items": GeneratedProjectIdea.model_json_schema()
+    }
+
     try:
-        raw_ideas_from_llm = await mock_project_llm.generate_ideas(
-            user_profile=request_data.user_profile_snapshot,
-            preferences=request_data.preferences,
-            num_ideas=request_data.number_of_ideas
+        llm_response_data = await project_idea_llm.generate_structured_response(
+            system_prompt=system_prompt,
+            user_query_or_context=user_prompt,
+            max_output_tokens=4096, # Allow more tokens for multiple ideas
+            response_schema=list_of_ideas_schema
         )
         
+        raw_ideas_json_str = llm_response_data.get("response_text")
+        if not raw_ideas_json_str:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LLM returned no content for project ideas.")
+
+        # Parse the JSON string from LLM
+        try:
+            raw_ideas_list = json.loads(raw_ideas_json_str)
+            if not isinstance(raw_ideas_list, list):
+                 raise ValueError("LLM response for project ideas is not a list.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from LLM for project ideas: {e}. Response: {raw_ideas_json_str[:500]}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LLM returned invalid JSON for project ideas.")
+
         validated_ideas: List[GeneratedProjectIdea] = []
-        validation_errors_for_ideas = []
-        for i, raw_idea in enumerate(raw_ideas_from_llm):
+        for raw_idea_dict in raw_ideas_list:
             try:
-                raw_idea.setdefault("request_id", f"req_user_{request_data.user_profile_snapshot.user_id}_{i}")
-                validated_ideas.append(GeneratedProjectIdea(**raw_idea))
+                # Ensure language_code is set correctly from the generation context
+                raw_idea_dict["language_code"] = effective_language_code
+                validated_ideas.append(GeneratedProjectIdea(**raw_idea_dict))
             except Exception as e_val:
-                print(f"Warning: Pydantic validation failed for raw project idea #{i+1} from LLM mock: {raw_idea}. Error: {e_val}")
-                validation_errors_for_ideas.append({"idea_index": i, "raw_idea_title_sample": str(raw_idea.get("title", "N/A"))[:50], "error_summary": str(e_val)[:200]})
+                logger.warning(f"Pydantic validation failed for a raw project idea: {raw_idea_dict}. Error: {e_val}")
+                # Optionally skip this idea or collect errors
 
-        if not validated_ideas and raw_ideas_from_llm:
-             print(f"Critical Error: All {len(raw_ideas_from_llm)} ideas from LLM failed Pydantic validation. Errors: {validation_errors_for_ideas}")
-             raise HTTPException(status_code=500, detail=f"AI service returned project ideas, but they were in an unexpected or incomplete format. {len(validation_errors_for_ideas)} idea(s) had validation issues. Please check agent logs.")
         if not validated_ideas:
-             raise HTTPException(status_code=404, detail="Could not generate suitable project ideas based on the provided profile and preferences. Please try adjusting your input or try again later.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Could not generate suitable project ideas after validation.")
 
+    except EnvironmentError as e:
+        logger.error(f"Configuration error for LLM: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI service configuration error: {e}")
     except Exception as e:
-        print(f"Critical Error during project idea generation pipeline or LLM call: {e}")
-        raise HTTPException(status_code=503, detail="An unexpected error occurred with the AI project generation service. Please try again later.")
+        logger.error(f"Error during project idea generation: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Error generating project ideas.")
 
     processing_end_time = time.perf_counter()
-    processing_time_ms = (processing_end_time - processing_start_time) * 1000
-
-    debug_info_dict = {
-        "llm_model_name_used": MOCKED_PROJECT_LLM_NAME,
-        "processing_time_ms": round(processing_time_ms, 2),
+    debug_info = {
+        "llm_model_name_used": project_idea_llm.model_name,
+        "processing_time_ms": round((processing_end_time - processing_start_time) * 1000, 2),
+        "prompt_token_count": llm_response_data.get("prompt_token_count"),
+        "response_token_count": llm_response_data.get("response_token_count"),
+        "language_generated": effective_language_code,
         "num_ideas_requested": request_data.number_of_ideas,
-        "num_ideas_generated_valid": len(validated_ideas),
-        "ideas_validation_failures": len(validation_errors_for_ideas)
+        "num_ideas_generated_valid": len(validated_ideas)
     }
-    if os.getenv("UPLAS_DEBUG_MODE", "false").lower() == "true":
-        debug_info_dict["conceptual_llm_prompt_sent_sample"] = conceptual_llm_prompt[:2500] + ("..." if len(conceptual_llm_prompt) > 2500 else "")
-        if validation_errors_for_ideas:
-             debug_info_dict["validation_error_details_sample"] = validation_errors_for_ideas[:3] # Sample of errors
+    return ProjectIdeaGenerationResponse(generated_ideas=validated_ideas, debug_info=debug_info)
 
-    return ProjectIdeaGenerationResponse(
-        generated_ideas=validated_ideas,
-        debug_info=debug_info_dict
+
+@app.post("/v1/assess-project", response_model=ProjectAssessmentResponse, summary="Assess a User's Project Submission")
+async def assess_project_endpoint(request_data: ProjectAssessmentRequest):
+    processing_start_time = time.perf_counter()
+    effective_language_code = request_data.language_code or DEFAULT_LANGUAGE
+
+    system_prompt = construct_project_assessment_prompt_system(effective_language_code)
+    user_prompt = construct_project_assessment_prompt_user(
+        original_project=request_data.project_idea,
+        submission=request_data.submission,
+        language_code=effective_language_code
     )
+    
+    assessment_result_schema = ProjectAssessmentResult.model_json_schema()
 
-# To run this FastAPI app locally:
-# Ensure you are in the `uplas-ai-agents/project_generator_agent/` directory.
-# Then run: uvicorn main:app --reload --port 8004
+    try:
+        llm_response_data = await assessment_llm.generate_structured_response(
+            system_prompt=system_prompt,
+            user_query_or_context=user_prompt,
+            max_output_tokens=2048,
+            response_schema=assessment_result_schema
+        )
+
+        raw_assessment_json_str = llm_response_data.get("response_text")
+        if not raw_assessment_json_str:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LLM returned no content for project assessment.")
+
+        try:
+            assessment_data_dict = json.loads(raw_assessment_json_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from LLM for assessment: {e}. Response: {raw_assessment_json_str[:500]}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LLM returned invalid JSON for project assessment.")
+        
+        # Ensure language_code is correctly set
+        assessment_data_dict["language_code"] = effective_language_code
+        assessment_result = ProjectAssessmentResult(**assessment_data_dict)
+
+    except EnvironmentError as e:
+        logger.error(f"Configuration error for LLM: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI service configuration error: {e}")
+    except Exception as e:
+        logger.error(f"Error during project assessment: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Error assessing project.")
+
+    # Trigger AI Tutor if assessment score is below threshold
+    tutor_triggered = False
+    if not assessment_result.is_passed or assessment_result.score < ASSESSMENT_PASS_THRESHOLD:
+        # Fetch user profile for tutor call - this is a simplification.
+        # In a real app, you'd fetch the full UserProfileSnapshot based on request_data.user_id
+        # For now, creating a minimal one.
+        user_profile_for_tutor = UserProfileSnapshotForProjects(
+            user_id=request_data.user_id,
+            # Try to get more details if they were part of an initial request or stored with the project
+            # For this example, we'll assume we don't have them readily available for the tutor call
+            # and the tutor will have to work with what's in the assessment feedback.
+            # Ideally, the original UserProfileSnapshotForProjects used for idea generation
+            # would be passed along or fetched.
+        )
+        
+        # Ensure AI_TUTOR_AGENT_URL is configured
+        if AI_TUTOR_AGENT_URL:
+            tutor_triggered = await trigger_ai_tutor_for_failed_assessment(
+                user_id=request_data.user_id,
+                user_profile=user_profile_for_tutor, # Pass the fetched/constructed profile
+                project_title=request_data.project_idea.title,
+                assessment_feedback=assessment_result.feedback_summary_html + " Areas for improvement: " + "; ".join(assessment_result.areas_for_improvement_html),
+                language_code=effective_language_code
+            )
+            assessment_result.tutor_session_triggered = tutor_triggered
+        else:
+            logger.warning("AI_TUTOR_AGENT_URL not configured. Cannot trigger tutor for failed assessment.")
+
+
+    processing_end_time = time.perf_counter()
+    debug_info = {
+        "llm_model_name_used": assessment_llm.model_name,
+        "processing_time_ms": round((processing_end_time - processing_start_time) * 1000, 2),
+        "prompt_token_count": llm_response_data.get("prompt_token_count"),
+        "response_token_count": llm_response_data.get("response_token_count"),
+        "language_assessed_in": effective_language_code
+    }
+    return ProjectAssessmentResponse(assessment_result=assessment_result, debug_info=debug_info)
+
+# --- Health Check Endpoint ---
+@app.get("/health", status_code=status.HTTP_200_OK)
+async def health_check():
+    if not GCP_PROJECT_ID:
+        return {"status": "unhealthy", "reason": "GCP_PROJECT_ID not configured.", "service": "ProjectGeneratorAgent"}
+    # Add check for AI_TUTOR_AGENT_URL if assessment triggering is critical
+    return {"status": "healthy", "service": "ProjectGeneratorAgent"}
+
+if __name__ == "__main__":
+    import uvicorn
+    if not GCP_PROJECT_ID:
+        print("Warning: GCP_PROJECT_ID is not set. Please set this environment variable.")
+    if not AI_TUTOR_AGENT_URL:
+        print("Warning: AI_TUTOR_AGENT_URL is not set. Tutor triggering for failed assessments will not work.")
+    
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8004)))
+
+# To run locally:
+# GCP_PROJECT_ID="your-gcp-project" AI_TUTOR_AGENT_URL="http://localhost:8001" uvicorn main:app --reload --port 8004
+
