@@ -1,1 +1,108 @@
+{
+    "name": "Uplas AI Agents Dev Environment",
+    // You can use a Dockerfile for more complex setups, or a pre-built image.
+    // Using a pre-built Microsoft Python image with Node.js (useful if you ever need to test frontend interactions or use Node-based tools)
+    // and gcloud SDK.
+    "image": "mcr.microsoft.com/devcontainers/python:0-3.9-bullseye", // Python 3.9 base
+
+    // Features to add to the Dev Container.
+    // See https://github.com/devcontainers/features/tree/main/src for options
+    "features": {
+        "ghcr.io/devcontainers/features/python:1": {
+            "version": "3.9", // Ensure Python 3.9
+            "installTools": true // Installs pipx, poetry, etc.
+        },
+        "ghcr.io/devcontainers/features/node:1": { // Optional: if you need Node.js for any tooling
+            "version": "lts"
+        },
+        "ghcr.io/devcontainers/features/docker-in-docker:2": { // If you need to build/run Docker containers inside Codespaces
+            "version": "latest",
+            "moby": true
+        },
+        "ghcr.io/devcontainers/features/google-cloud-cli:1": { // Installs gcloud CLI
+            "version": "latest",
+            "installGkeGcloudAuthPlugin": true // For GKE, if needed
+        }
+    },
+
+    // Configure tool-specific properties.
+    "customizations": {
+        // Configure properties specific to VS Code.
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python", // Or path from python feature
+                "python.linting.enabled": true,
+                "python.linting.pylintEnabled": true, // Or flake8, black, etc.
+                "python.formatting.provider": "black",
+                "python.testing.pytestArgs": [
+                    "." // Default directory for pytest
+                ],
+                "python.testing.unittestEnabled": false,
+                "python.testing.pytestEnabled": true,
+                "editor.formatOnSave": true,
+                "files.eol": "\n",
+                "files.insertFinalNewline": true,
+                "terminal.integrated.defaultProfile.linux": "bash", // Or zsh if preferred
+                "[python]": {
+                    "editor.defaultFormatter": "ms-python.black-formatter",
+                    "editor.tabSize": 4,
+                    "editor.insertSpaces": true
+                }
+            },
+            // Add the IDs of extensions you want installed when the container is created.
+            "extensions": [
+                "ms-python.python", // Python language support
+                "ms-python.vscode-pylance", // IntelliSense
+                "ms-python.flake8", // Linter
+                "ms-python.black-formatter", // Formatter
+                "ms-python.isort", // Import sorter
+                "ms-azuretools.vscode-docker", // Docker extension
+                "github.vscode-pull-request-github", // GitHub PR integration
+                "redhat.vscode-yaml", // For YAML files (GitHub Actions workflows)
+                "googlecloudtools.cloudcode", // Google Cloud tools (optional, but useful)
+                "bierner.markdown-preview-github-styles", // For README previews
+                "davidanson.vscode-markdownlint" // Markdown linter
+            ]
+        }
+    },
+
+    // Use 'forwardPorts' to make a list of ports inside the container available locally.
+    // This can be used if you want to run the FastAPI agents inside the Codespace and access them from your local browser.
+    "forwardPorts": [
+        8001, // AI Tutor Agent
+        8002, // TTS Agent
+        8003, // TTV Agent
+        8004  // Project Generator Agent
+    ],
+    // "portsAttributes": {
+    //  "8001": { "label": "AI Tutor Agent" },
+    //  "8002": { "label": "TTS Agent" },
+    //  "8003": { "label": "TTV Agent" },
+    //  "8004": { "label": "Project Generator Agent" }
+    // },
+
+
+    // Commands to run after the container is created.
+    "postCreateCommand": "echo 'Codespace created. Installing dependencies...' && bash .devcontainer/post-create.sh",
+
+    // Commands to run when you attach to the container (runs after postCreateCommand).
+    // "postAttachCommand": {
+    //   "server": "echo 'Attached to Codespace. Authenticating to GCP...' && gcloud auth application-default login --quiet"
+    // },
+
+    // Uncomment to connect as a non-root user if needed. See https://aka.ms/vscode-remote/containers/non-root.
+    // "remoteUser": "vscode" // Or "node" if using a Node-based image primarily
+
+    // Set environment variables for the Codespace itself.
+    // These are NOT directly passed to Cloud Run deployments but are available in the Codespace terminal.
+    // For deployment secrets, use GitHub Secrets.
+    "remoteEnv": {
+        // "GCP_PROJECT_ID": "your-gcp-project-id-here-for-codespace-testing", // Example
+        // "PYTHONPATH": "/workspaces/${containerWorkspaceFolder}" // Ensures root is in PYTHONPATH for imports
+    },
+
+    // Mounts the workspace folder to /workspaces.
+    "workspaceFolder": "/workspaces",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
+}
 
