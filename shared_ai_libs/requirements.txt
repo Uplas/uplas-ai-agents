@@ -1,5 +1,6 @@
-# Add any dependencies required by shared_ai_libs/main.py here.
-# For now, if it only contains constants, this can remain empty.
-# If CommonDebugInfo example was used, you'd add:
+# shared_ai_libs/requirements.txt
+# Add dependencies for the shared library itself, if any.
+# If it only contains constants, this might be empty or just for dev tools.
+# If you add Pydantic models here:
 # pydantic>=2.0,<3.0
 
