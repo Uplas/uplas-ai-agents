@@ -1,43 +1,31 @@
 #!/bin/bash
-set -e # Exit immediately if a command exits with a non-zero status.
+echo "Uplas AI Agents: Post-create script started."
 
-echo "--- Post-create script started ---"
-
-# Update package lists and install any OS-level dependencies if needed by Python packages
+# Update package list and install common tools if needed
 # sudo apt-get update
-# sudo apt-get install -y --no-install-recommends <your-os-packages-here>
-# sudo rm -rf /var/lib/apt/lists/*
+# sudo apt-get install -y some-common-tool
 
-# Upgrade pip
-python -m pip install --upgrade pip
-
-# Install Python dependencies for all agents and shared_ai_libs
-# This assumes your requirements.txt files are in the standard locations.
-echo "Installing Python dependencies for AI Tutor Agent..."
+# Install dependencies for each agent
+# Assuming this script is run from the repository root
+echo "Installing dependencies for Personalized AI Tutor..."
 pip install -r personalized_tutor_nlp_llm/requirements.txt
 
-echo "Installing Python dependencies for TTS Agent..."
+echo "Installing dependencies for TTS Agent..."
 pip install -r tts_agent/requirements.txt
 
-echo "Installing Python dependencies for TTV Agent..."
-pip install -r ttv_agent/requirements.txt
+echo "Installing dependencies for TTV Agent..."
+pip install -r ttv_agent/requirements.txt # Ensure this requirements exists at this path
 
-echo "Installing Python dependencies for Project Generator Agent..."
+echo "Installing dependencies for Project Generation & Assessment Agent..."
 pip install -r project_generator_agent/requirements.txt
 
-if [ -f "shared_ai_libs/requirements.txt" ]; then
-    echo "Installing Python dependencies for Shared AI Libraries..."
-    pip install -r shared_ai_libs/requirements.txt
-fi
+echo "Installing dependencies for NLP Content Agent..."
+pip install -r nlp_content_agent/requirements.txt # Assuming we created this
 
-# Install development tools like pytest, pytest-asyncio if not in individual requirements
-echo "Installing common development tools..."
-pip install pytest pytest-asyncio black flake8 isort pylint
+echo "Installing dependencies for Shared AI Libs (if any)..."
+# If shared_ai_libs had its own requirements.txt for dev tools like linters specific to it
+# pip install -r shared_ai_libs/requirements.txt
 
-# Authenticate to Google Cloud (optional here, can be done manually or via postAttachCommand)
-# echo "Attempting to configure gcloud CLI..."
-# gcloud auth configure-docker $(echo $GCP_LOCATION | cut -d'-' -f1,2)-docker.pkg.dev --quiet || echo "gcloud docker config failed, ensure you are logged in if needed for local Docker pushes from Codespace."
-# echo "To authenticate gcloud for other commands, run: gcloud auth application-default login"
-
-echo "--- Post-create script finished ---"
-
+echo "Uplas AI Agents: Post-create script finished."
+# You might also want to run gcloud auth application-default login here
+# or provide instructions for the user to do so once the Codespace is up.
