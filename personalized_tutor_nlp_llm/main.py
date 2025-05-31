@@ -2,11 +2,12 @@
 from fastapi import FastAPI, HTTPException, Request as FastAPIRequest, status
 from pydantic import BaseModel, Field, validator
 from typing import List, Dict, Optional, Any, Union
-import httpx # For potential future calls to Django to fetch content
+import httpx # For internal calls to fetch NLP-processed content via backend
 import os
 import time
 from enum import Enum
 import logging
+import json # For parsing NLP agent's JSON output
 
 # GCP Clients
 from google.cloud import aiplatform
@@ -15,27 +16,42 @@ import google.auth.transport.requests
 
 # --- Configuration ---
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
-GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1") # Default to us-central1 if not set
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-1.5-flash-001") # Using a Gemini model
+GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-1.5-flash-001")
 
-# Initialize Vertex AI
+# Assuming nlp_content_agent output models are defined elsewhere or simplified here
+# For this example, we'll assume the structure from the NLP agent's ProcessedModule
+# This might live in a shared Pydantic models library eventually.
+class NlpTopicProcessed(BaseModel): # Simplified for tutor's consumption context
+    topic_title: str
+    key_concepts: List[str]
+    content_with_tags: str
+
+class NlpLessonProcessed(BaseModel):
+    lesson_title: str
+    topics: List[NlpTopicProcessed]
+
+class NlpModuleProcessed(BaseModel): # What the tutor will fetch
+    module_id: str
+    language_code: str
+    lessons: List[NlpLessonProcessed]
+
+
+# Initialize Vertex AI (from existing code)
 if not GCP_PROJECT_ID:
     logging.warning("GCP_PROJECT_ID environment variable not set. LLM calls may fail.")
-    # In a real deployment, you might want to raise an error or have a fallback
 else:
     aiplatform.init(project=GCP_PROJECT_ID, location=GCP_LOCATION)
 
-# Supported languages (BCP-47 codes)
 SUPPORTED_LANGUAGES = ["en-US", "fr-FR", "es-ES", "de-DE", "pt-BR", "zh-CN", "hi-IN"]
 DEFAULT_LANGUAGE = "en-US"
 
-# --- Logging Setup ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Pydantic Models for API Contract (Updated) ---
+# --- Pydantic Models (largely from existing code, with minor notes) ---
 
-class UserProfileSnapshot(BaseModel):
+class UserProfileSnapshot(BaseModel): # As per existing
     industry: Optional[str] = Field(None, examples=["Technology"])
     profession: Optional[str] = Field(None, examples=["Software Engineer"])
     country: Optional[str] = Field(None, examples=["Kenya"])
@@ -46,352 +62,398 @@ class UserProfileSnapshot(BaseModel):
     career_interest: Optional[str] = Field(None, examples=["AI Specialist"])
     learning_goals: Optional[str] = Field(None, examples=["Master machine learning concepts."])
 
-class TutorRequestContext(BaseModel):
+class TutorRequestContext(BaseModel): # As per existing, will be used to fetch NLP content
     course_id: Optional[str] = None
-    topic_id: Optional[str] = None
+    topic_id: Optional[str] = None # Key to fetch specific NLP-processed topic
+    module_id: Optional[str] = None # Alternative key to fetch whole NLP-processed module
     project_id: Optional[str] = None
-    current_topic_title: Optional[str] = Field(None, examples=["Introduction to Python Lists"])
+    current_topic_title: Optional[str] = Field(None, examples=["Introduction to Python Lists"]) # Can be derived from NLP content
     current_course_title: Optional[str] = Field(None, examples=["Python for Beginners"])
     current_project_title: Optional[str] = Field(None, examples=["Data Analysis Mini-Project"])
     project_assessment_feedback: Optional[str] = Field(None, description="Feedback from a failed project assessment to guide the tutor.")
 
-class ConversationRole(str, Enum):
+class ConversationRole(str, Enum): # As per existing
     USER = "user"
-    ASSISTANT = "assistant" # LLM's role
-    SYSTEM = "system" # For initial instructions, not part of chat history for some models
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
 
-class ConversationTurn(BaseModel):
+class ConversationTurn(BaseModel): # As per existing
     role: ConversationRole
-    content: str # For Gemini, 'parts': [{'text': '...'}]
+    content: str
 
-class AiTutorQueryRequest(BaseModel):
+class AiTutorQueryRequest(BaseModel): # As per existing
     user_id: str = Field(..., examples=["user_uuid_123"])
     session_id: Optional[str] = Field(None, examples=["session_uuid_abc"])
     query_text: str = Field(..., min_length=1, examples=["Can you explain Python decorators?"])
     context: Optional[TutorRequestContext] = None
     user_profile_snapshot: UserProfileSnapshot
-    conversation_history: Optional[List[ConversationTurn]] = Field(default_factory=list, description="History of user and assistant messages.")
+    conversation_history: Optional[List[ConversationTurn]] = Field(default_factory=list)
     language_code: Optional[str] = Field(DEFAULT_LANGUAGE, examples=SUPPORTED_LANGUAGES)
-    max_tokens_response: Optional[int] = Field(1024, ge=50, le=8192) # Increased for more comprehensive answers
+    max_tokens_response: Optional[int] = Field(1024, ge=50, le=8192)
 
     @validator('language_code')
-    def validate_language_code(cls, v):
+    def validate_language_code(cls, v): # As per existing
         if v not in SUPPORTED_LANGUAGES:
             logger.warning(f"Unsupported language_code '{v}' received. Falling back to default '{DEFAULT_LANGUAGE}'.")
             return DEFAULT_LANGUAGE
         return v
 
-class GeneratedAnalogy(BaseModel):
+class GeneratedAnalogy(BaseModel): # As per existing
     analogy: str
-    relevance_score: Optional[float] = Field(None, ge=0.0, le=1.0) # LLM might not provide this directly
+    relevance_score: Optional[float] = Field(None, ge=0.0, le=1.0)
 
-class DebugInfo(BaseModel):
-    prompt_sent_to_llm_sample: Optional[str] = None # Sample of the prompt for debugging
+# NEW/ENHANCED: Structure for what LLM should return for better parsing
+class StructuredLLMOutput(BaseModel):
+    main_answer_text: str
+    suggested_follow_ups: List[str] = Field(default_factory=list)
+    generated_analogies_for_answer: List[str] = Field(default_factory=list)
+    # Optional: if LLM can provide a confidence on its answer
+    answer_confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+class DebugInfo(BaseModel): # As per existing
+    prompt_sent_to_llm_sample: Optional[str] = None
     llm_model_name_used: Optional[str] = None
     processing_time_ms: Optional[float] = None
     prompt_token_count: Optional[int] = None
     response_token_count: Optional[int] = None
     language_used: Optional[str] = None
 
-class AiTutorQueryResponse(BaseModel):
-    answer_text: str
+class AiTutorQueryResponse(BaseModel): # Modified to use StructuredLLMOutput's fields
+    answer_text: str # This will be main_answer_text
     suggested_follow_up_questions: List[str] = Field(default_factory=list)
-    generated_analogies: List[GeneratedAnalogy] = Field(default_factory=list) # LLM may embed these in answer_text
-    confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0) # LLM might not provide this
+    generated_analogies: List[GeneratedAnalogy] = Field(default_factory=list) # Map from List[str]
+    confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     debug_info: Optional[DebugInfo] = None
 
-# --- FastAPI Application ---
+
+# --- FastAPI Application (existing structure) ---
 app = FastAPI(
-    title="Uplas AI Tutor Agent (Vertex AI Integrated)",
-    description="Provides personalized explanations and guidance using Google Cloud Vertex AI (Gemini).",
-    version="0.2.0"
+    title="Uplas AI Tutor Agent (Vertex AI Integrated) - Enhanced",
+    description="Provides personalized explanations and guidance using Google Cloud Vertex AI (Gemini), powered by NLP-structured content.",
+    version="0.3.0" # Incremented version
 )
 
-# --- Vertex AI LLM Client Logic ---
-class VertexAILLMClient:
+# --- Vertex AI LLM Client Logic (Adapted from project_generator_agent for JSON output) ---
+class VertexAITutorLLMClient:
     def __init__(self, model_name: str):
         self.model_name = model_name
-        # The actual model object is loaded per request or kept if stateful interactions are needed
-        # For stateless, a new GenerativeModel instance can be created each time.
-        # For chat, you'd initialize `model.start_chat(history=...)`
 
-    async def generate_response(
+    async def generate_structured_response( # Adapted from project_generator_agent
         self,
-        system_prompt: str, # Prepended to the main conversation
-        conversation_turns: List[Dict[str, Any]], # List of {'role': 'user'|'model', 'parts': [{'text': '...'}]}
+        system_prompt: str,
+        conversation_turns: List[Dict[str, Any]],
         max_output_tokens: int,
-        temperature: float = 0.7, # Default temperature
-        top_p: float = 0.95,      # Default top_p
-        top_k: int = 40         # Default top_k
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        top_k: int = 40,
+        response_schema: Optional[Dict[str, Any]] = None # For Gemini JSON mode
     ) -> Dict[str, Any]:
-        """
-        Generates a response from Vertex AI's Gemini model.
-        Handles both single-turn and multi-turn (chat-like) interactions.
-        """
         if not GCP_PROJECT_ID:
-            raise EnvironmentError("GCP_PROJECT_ID is not configured. Cannot call Vertex AI.")
+            raise EnvironmentError("GCP_PROJECT_ID is not configured.")
 
-        from vertexai.generative_models import GenerativeModel, Part, HarmCategory, HarmBlockThreshold
+        from vertexai.generative_models import GenerativeModel, Part, GenerationConfig, HarmCategory, HarmBlockThreshold #
 
         model = GenerativeModel(
             self.model_name,
             system_instruction=[Part.from_text(system_prompt)] if system_prompt else None
         )
         
-        # Construct history for the model
-        # Gemini expects roles 'user' and 'model'.
+        generation_config = GenerationConfig(
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+        if response_schema: # Requesting JSON output
+            generation_config.response_mime_type = "application/json"
+            generation_config.response_schema = response_schema
+        
         history_for_model = []
         for turn in conversation_turns:
             role = 'user' if turn['role'] == ConversationRole.USER.value else 'model'
             history_for_model.append({'role': role, 'parts': [Part.from_text(turn['content'])]})
 
-        # If there's history, start a chat session
-        if len(history_for_model) > 1: # More than just the current user query
-            chat = model.start_chat(history=history_for_model[:-1]) # All but the last user message
+        # Simplified logic from existing tutor:
+        if len(history_for_model) > 1:
+            chat = model.start_chat(history=history_for_model[:-1])
             current_user_message = history_for_model[-1]['parts'][0].text
             llm_response = await chat.send_message_async(
                 [Part.from_text(current_user_message)],
-                generation_config={
-                    "max_output_tokens": max_output_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "top_k": top_k,
-                },
-                safety_settings={ # Example safety settings
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                }
+                generation_config=generation_config
+                # safety_settings can be added here as in existing code
             )
-        elif history_for_model: # Single user message
+        elif history_for_model:
             current_user_message = history_for_model[0]['parts'][0].text
             llm_response = await model.generate_content_async(
                 [Part.from_text(current_user_message)],
-                generation_config={
-                    "max_output_tokens": max_output_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "top_k": top_k,
-                },
-                 safety_settings={
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                }
+                generation_config=generation_config
+                # safety_settings
             )
-        else: # Should not happen if query_text is mandatory
-            return {"answer_text": "No input provided to LLM.", "prompt_token_count": 0, "response_token_count": 0}
+        else:
+             return {"structured_output_json": "{}", "prompt_token_count": 0, "response_token_count": 0}
 
-        answer_text = ""
+
+        response_text = "" # This will be the JSON string if schema is used
         prompt_tokens = 0
         response_tokens = 0
 
         if llm_response.candidates:
-            # Assuming the first candidate is the one we want
             candidate = llm_response.candidates[0]
             if candidate.content and candidate.content.parts:
-                answer_text = "".join([part.text for part in candidate.content.parts if part.text])
-
-            # Get token counts if available (usage_metadata might be present)
-            if hasattr(llm_response, 'usage_metadata') and llm_response.usage_metadata:
+                response_text = "".join([part.text for part in candidate.content.parts if part.text])
+            
+            if hasattr(llm_response, 'usage_metadata') and llm_response.usage_metadata: #
                 prompt_tokens = llm_response.usage_metadata.prompt_token_count
-                response_tokens = llm_response.usage_metadata.candidates_token_count # Sum of tokens for all candidates
-                # If only one candidate, this is effectively the response token count.
-                # For more precise candidate-specific tokens, one might need to inspect candidate.token_count if available.
-            else: # Fallback rough estimation (less accurate)
-                prompt_tokens = sum(len(turn['content'].split()) for turn in conversation_turns) + len(system_prompt.split())
-                response_tokens = len(answer_text.split())
-
-        # Placeholder for extracting structured analogies and follow-up questions
-        # This would ideally be done by prompting the LLM for a JSON output or by parsing its text.
-        # For now, we'll keep it simple.
+                response_tokens = llm_response.usage_metadata.candidates_token_count
+        
+        # The 'response_text' should now be a JSON string conforming to StructuredLLMOutput
         return {
-            "answer_text": answer_text,
-            "generated_analogies": [], # To be implemented with better prompting or parsing
-            "suggested_follow_up_questions": [], # To be implemented
+            "structured_output_json": response_text, # LLM returns a JSON string
             "prompt_token_count": prompt_tokens,
             "response_token_count": response_tokens
         }
 
-llm_client = VertexAILLMClient(model_name=LLM_MODEL_NAME)
+llm_client = VertexAITutorLLMClient(model_name=LLM_MODEL_NAME)
+
 
 # --- Helper Functions ---
 
-def construct_system_prompt_for_llm(
+async def fetch_processed_nlp_content(
+    module_id: Optional[str],
+    topic_id: Optional[str],
+    language_code: str
+) -> Optional[NlpModuleProcessed]: # Returns the whole module, tutor can pick relevant parts
+    """
+    ENHANCED: Fetches NLP-processed content.
+    In a real scenario, this would call a backend API endpoint that retrieves
+    the processed JSON from GCS based on module_id or topic_id.
+    e.g., GET /api/internal/processed-content/?module_id=<module_id>&lang=<language_code>
+    """
+    logger.info(f"Attempting to fetch NLP-processed content for module: {module_id}, topic: {topic_id}, lang: {language_code}")
+    # **** Placeholder for actual backend API call to get GCS URI & fetch content ****
+    # For now, returning a mock structure if a specific ID is queried.
+    if module_id == "course101_module3" or topic_id == "L1_T1_processed": # Example ID
+        mock_data_path = f"mock_nlp_output_{language_code}.json" # Simplified mock
+        try:
+            # This mock implies the NLP agent's output (a JSON file) is somehow available.
+            # In reality, you'd use httpx to call an internal API.
+            # For this example, let's imagine a simplified direct GCS fetch or local mock.
+            # For example, if topic_id == "L1_T1_processed" for "en-US":
+            if language_code == "en-US" and (module_id == "course101_module3" or topic_id == "L1_T1_processed"):
+                mock_nlp_json = {
+                  "moduleId": "course101_module3",
+                  "language_code": "en-US",
+                  "lessons": [
+                    {
+                      "lesson_id": "L1",
+                      "lesson_title": "What is a Qubit?",
+                      "topics": [
+                        {
+                          "topic_id": "L1_T1_processed",
+                          "topic_title": "Understanding Superposition (Processed)",
+                          "key_concepts": [
+                            "Qubits can represent 0, 1, or a combination of both.",
+                            "Superposition allows quantum computers to perform many calculations at once."
+                          ],
+                          "content_with_tags": "A classical bit is either 0 or 1. <analogy type=\"comparison_to_classical_needed\" /> A qubit, however, can be in a state of superposition. <visual_aid_suggestion type=\"animated_diagram\" description=\"Show a classical bit vs. a qubit sphere (Bloch sphere)\" /> Think of it like a spinning coin. <interactive_question_opportunity text_suggestion=\"How is a qubit different from a classical bit you use every day?\" /> This property is fundamental. <difficulty type=\"foundational_info\" />"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                return NlpModuleProcessed(**mock_nlp_json)
+            logger.warning(f"No mock NLP content found for {module_id}/{topic_id} in {language_code}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching/parsing mock NLP content: {e}")
+            return None
+    return None
+
+
+def construct_enhanced_system_prompt(
     user_profile: UserProfileSnapshot,
     language_code: str,
-    course_content_snippet: Optional[str] = None,
+    nlp_processed_content: Optional[NlpModuleProcessed] = None, # Now expects structured content
+    current_topic_id_in_focus: Optional[str] = None,
     context_data: Optional[TutorRequestContext] = None,
 ) -> str:
-    system_message_parts = [
+    system_message_parts = [ # Largely from existing, with enhancements
         "You are Uplas AI Tutor, a highly proficient, engaging, and personalized AI learning assistant.",
-        "Your primary goal is to explain complex concepts clearly and concisely, tailored to the user's background and learning preferences.",
-        f"IMPORTANT: Generate your entire response exclusively in the following language: {language_code}.",
-        f"The user indicates a preference for a '{user_profile.preferred_tutor_persona}' communication style. Adhere to this style.",
-        "Be encouraging, patient, and supportive. Break down answers into digestible parts if the concept is complex.",
-        "If a question is ambiguous, ask for clarification in {language_code} before attempting an answer.",
-        "If a question is outside the scope of the platform's educational content (e.g., personal advice, harmful content, unrelated topics), politely state in {language_code} that you cannot answer it and try to guide them back to relevant Uplas topics.",
-        "When generating analogies, if possible, explicitly state them using a prefix like 'Analogy:' or 'Think of it like this:' (translated to {language_code}) for clarity. These analogies should be highly relevant to the user's profile.",
-        "Structure your answers well. Use bullet points or numbered lists for steps or multiple points if it enhances clarity.",
+        f"Your primary goal is to explain complex concepts clearly and concisely, tailored to the user's background and learning preferences. Respond ONLY in [{language_code}].",
+        f"Adhere to the user's preferred '{user_profile.preferred_tutor_persona}' communication style.",
+        "When appropriate, generate analogies and suggest follow-up questions as per the requested JSON output structure.",
     ]
 
-    # User Profile Context Block
-    profile_context_str_parts = ["\n--- User Profile Summary for Personalization ---"]
-    has_profile_info = False
-    if user_profile.profession: profile_context_str_parts.append(f"- Profession: {user_profile.profession}"); has_profile_info = True
-    if user_profile.industry: profile_context_str_parts.append(f"- Industry: {user_profile.industry}"); has_profile_info = True
-    if user_profile.city or user_profile.country:
-        location = f"{user_profile.city or ''}, {user_profile.country or ''}".strip(", ")
-        if location: profile_context_str_parts.append(f"- Location: {location}"); has_profile_info = True
-    if user_profile.career_interest: profile_context_str_parts.append(f"- Career Interest: {user_profile.career_interest}"); has_profile_info = True
-    if user_profile.learning_goals: profile_context_str_parts.append(f"- Stated Learning Goals: {user_profile.learning_goals}"); has_profile_info = True
-    if user_profile.learning_style_preference:
-        styles = ", ".join([f"{k} (preference: {v*100:.0f}%)" for k, v in user_profile.learning_style_preference.items() if v > 0.3])
-        if styles: profile_context_str_parts.append(f"- Noted Learning Styles: {styles}"); has_profile_info = True
-    if user_profile.current_knowledge_level:
-        knowledge = ", ".join([f"{k}: {v}" for k, v in user_profile.current_knowledge_level.items()])
-        if knowledge: profile_context_str_parts.append(f"- Self-Assessed Knowledge: {knowledge}"); has_profile_info = True
+    # User Profile Block (similar to existing)
+    profile_context_str_parts = ["\n--- User Profile Summary ---"]
+    # ... (Add user profile details as in existing construct_system_prompt_for_llm) ...
+    if user_profile.profession: profile_context_str_parts.append(f"- Profession: {user_profile.profession}")
+    if user_profile.industry: profile_context_str_parts.append(f"- Industry: {user_profile.industry}")
+    if user_profile.learning_goals: profile_context_str_parts.append(f"- Learning Goals: {user_profile.learning_goals}")
+    system_message_parts.extend(profile_context_str_parts)
+
+    # ENHANCED: Incorporate NLP-processed content and its tags
+    if nlp_processed_content:
+        system_message_parts.append("\n--- Relevant Processed Learning Material (Use this as primary reference) ---")
+        # Find the specific topic in focus if current_topic_id_in_focus is provided
+        content_to_inject = ""
+        if current_topic_id_in_focus and nlp_processed_content.lessons:
+            for lesson in nlp_processed_content.lessons:
+                for topic in lesson.topics:
+                    if topic.topic_id == current_topic_id_in_focus:
+                        content_to_inject = f"Current Topic: {topic.topic_title}\nKey Concepts: {', '.join(topic.key_concepts)}\nContent: {topic.content_with_tags}"
+                        break
+                if content_to_inject: break
+        
+        if not content_to_inject: # Fallback to a general snippet if specific topic not found or ID not given
+            # Simplified: just take first lesson's first topic for brevity in example
+            if nlp_processed_content.lessons and nlp_processed_content.lessons[0].topics:
+                first_topic = nlp_processed_content.lessons[0].topics[0]
+                content_to_inject = f"Topic: {first_topic.topic_title}\nContent: {first_topic.content_with_tags}"
+        
+        system_message_parts.append(content_to_inject[:4000]) # Truncate to manage prompt size
+        system_message_parts.append(
+            "\nInstruction on using tags from the content: If you see tags like "
+            "`<analogy type=\"...needed\" />` or `<example domain=\"...needed\" />`, "
+            "proactively generate a suitable analogy or example personalized to the user's profile (listed above). "
+            "If you see `<interactive_question_opportunity text_suggestion=\"...\" />`, consider asking that question or a similar one. "
+            "The `content_with_tags` is your primary source material for the current context."
+        )
     
-    if has_profile_info:
-        system_message_parts.extend(profile_context_str_parts)
-    else:
-        system_message_parts.append("\nUser profile details for personalization were not extensively provided.")
+    # Project Assessment Feedback Context (ENHANCED for empathy)
+    if context_data and context_data.project_assessment_feedback:
+        system_message_parts.append("\n--- Context: Project Feedback ---")
+        system_message_parts.append(
+            "The user recently submitted a project and did not pass or needs further guidance. "
+            f"Their project was: '{context_data.current_project_title or 'Not specified'}'. "
+            f"The assessment feedback was: '{context_data.project_assessment_feedback}'. "
+            "Your role now is to be an **Empathetic Guide**. Do NOT simply repeat the feedback. "
+            "Help the user understand the core reasons they struggled, "
+            "explain the relevant concepts from the course material (provided above, if any) that they might need to revisit, "
+            "and offer encouraging, actionable steps or simpler exercises they can take to improve. "
+            "Acknowledge their effort and maintain a supportive tone."
+        )
 
-    # Specific Question Context Block
-    if context_data:
-        context_info_str_parts = ["\n--- Current Learning Context ---"]
-        has_context_info = False
-        if context_data.current_course_title: context_info_str_parts.append(f"- Course: {context_data.current_course_title}"); has_context_info = True
-        if context_data.current_topic_title: context_info_str_parts.append(f"- Topic: {context_data.current_topic_title}"); has_context_info = True
-        if context_data.current_project_title: context_info_str_parts.append(f"- Project: {context_data.current_project_title}"); has_context_info = True
-        if context_data.project_assessment_feedback:
-            context_info_str_parts.append(f"- Important: The user recently received feedback on a project: '{context_data.project_assessment_feedback}'. If their question relates to this project or similar concepts, address this feedback directly and help them understand the areas they struggled with.")
-            has_context_info = True
-        if has_context_info:
-            system_message_parts.extend(context_info_str_parts)
-
-    # Main Course/Topic Content for RAG (if provided)
-    if course_content_snippet:
-        system_message_parts.append("\n--- Relevant Information/Course Material Snippet (use this as primary reference) ---")
-        system_message_parts.append(course_content_snippet[:3000]) # Truncate
-
-    system_message_parts.append("\nRemember to respond ONLY in {language_code}.")
+    system_message_parts.append(
+        "\nYour final response MUST be a single JSON object matching the schema: "
+        "{'main_answer_text': 'Your detailed answer here, in [Language].', "
+        "'suggested_follow_ups': ['Question 1 in [Language]?', 'Question 2 in [Language]?'], "
+        "'generated_analogies_for_answer': ['Analogy 1 in [Language]', 'Analogy 2 in [Language]'], "
+        "'answer_confidence_score': 0.0-1.0 (optional)}"
+        f" All text in the JSON must be in [{language_code}]."
+    )
     return "\n".join(system_message_parts)
 
 
-async def fetch_course_content_from_django(topic_id: Optional[str], course_id: Optional[str], language_code: str) -> Optional[str]:
-    """
-    MOCK: Fetches course content from Django.
-    In a real scenario, this would be an authenticated HTTP call to an internal Django API endpoint
-    that serves content based on topic_id, course_id, and language_code.
-    e.g., GET /api/internal/content/?topic_id=<topic_id>&course_id=<course_id>&lang=<language_code>
-    """
-    logger.info(f"Mock fetching course content for topic: {topic_id}, course: {course_id}, lang: {language_code}")
-    if topic_id == "topic_python_lists_id":
-        if language_code.startswith("es"):
-            return "Las listas de Python son secuencias versátiles, ordenadas y mutables. Métodos clave incluyen append(), extend(), insert(), remove(), pop(), index(), count(), sort(), reverse(). El rebanado también es poderoso."
-        return "Python lists are versatile, ordered, and mutable sequences. Key methods include append(), extend(), insert(), remove(), pop(), index(), count(), sort(), reverse(). Slicing is also powerful."
-    # Add more mock content for different topics/languages as needed for testing
-    return None
-
-# --- API Endpoint ---
+# --- API Endpoint (Modified to use enhanced logic) ---
 @app.post("/v1/ask-tutor", response_model=AiTutorQueryResponse, summary="Get a personalized answer from the AI Tutor")
 async def ask_tutor_endpoint(
     request_data: AiTutorQueryRequest,
-    # fastapi_request: FastAPIRequest # For accessing raw request if needed
 ):
     processing_start_time = time.perf_counter()
     effective_language_code = request_data.language_code or DEFAULT_LANGUAGE
 
-    course_material_context: Optional[str] = None
-    if request_data.context and (request_data.context.topic_id or request_data.context.course_id):
-        try:
-            course_material_context = await fetch_course_content_from_django(
-                request_data.context.topic_id,
-                request_data.context.course_id,
-                effective_language_code
-            )
-        except Exception as e:
-            logger.error(f"Error fetching course content from Django (mock): {e}")
-            # Decide if this should be a fatal error or just proceed without course context
+    nlp_material_context: Optional[NlpModuleProcessed] = None
+    current_topic_id: Optional[str] = None
 
-    system_prompt_for_llm = construct_system_prompt_for_llm(
+    if request_data.context:
+        current_topic_id = request_data.context.topic_id
+        # Fetch NLP processed content using module_id or topic_id from context
+        # The NLP agent should have processed and stored this. This call goes to our backend,
+        # which then fetches from GCS or its DB.
+        nlp_material_context = await fetch_processed_nlp_content(
+            request_data.context.module_id, # Prefer module_id to get broader context
+            request_data.context.topic_id,
+            effective_language_code
+        )
+        if not nlp_material_context and request_data.context.course_id: # Fallback if only course_id is there (less specific)
+            # This implies a mapping from course_id to some default module_id if needed
+            logger.info(f"NLP context not found for module/topic, attempting with course_id: {request_data.context.course_id} as a general context.")
+            # Potentially fetch a general "course overview" processed document if available
+
+    system_prompt_for_llm = construct_enhanced_system_prompt(
         user_profile=request_data.user_profile_snapshot,
         language_code=effective_language_code,
-        course_content_snippet=course_material_context,
+        nlp_processed_content=nlp_material_context,
+        current_topic_id_in_focus=current_topic_id,
         context_data=request_data.context
     )
 
-    # Prepare conversation history for LLM
-    # Gemini expects roles 'user' and 'model'
     llm_conversation_history: List[Dict[str, Any]] = []
-    for turn in request_data.conversation_history:
-        # Map roles: ASSISTANT (our Pydantic model) -> 'model' (for Gemini)
+    for turn in request_data.conversation_history: #
         role = 'model' if turn.role == ConversationRole.ASSISTANT else turn.role.value
         llm_conversation_history.append({'role': role, 'content': turn.content})
-    
-    # Add current user query to the history for the LLM
     llm_conversation_history.append({'role': ConversationRole.USER.value, 'content': request_data.query_text})
 
+    structured_llm_output: Optional[StructuredLLMOutput] = None
+    llm_raw_response_data = {}
+
     try:
-        llm_response_data = await llm_client.generate_response(
+        # Define the schema for the expected JSON output from Gemini
+        response_json_schema = StructuredLLMOutput.model_json_schema()
+
+        llm_raw_response_data = await llm_client.generate_structured_response(
             system_prompt=system_prompt_for_llm,
             conversation_turns=llm_conversation_history,
-            max_output_tokens=request_data.max_tokens_response
+            max_output_tokens=request_data.max_tokens_response,
+            response_schema=response_json_schema # Requesting JSON output
         )
-        answer_text = llm_response_data.get("answer_text", "I apologize, I couldn't generate a response for that.")
-        # Analogies and follow-ups are placeholders for now, assuming they are part of answer_text
-        # For structured output, the LLM prompt would need to request JSON.
+        
+        raw_json_string = llm_raw_response_data.get("structured_output_json", "{}")
+        try:
+            llm_output_dict = json.loads(raw_json_string)
+            # Ensure language of the output parts is also considered if not inherently handled by LLM responding in the target lang
+            structured_llm_output = StructuredLLMOutput(**llm_output_dict)
+        except json.JSONDecodeError as e:
+            logger.error(f"LLM returned invalid JSON for structured output: {raw_json_string[:500]}. Error: {e}")
+            # Fallback to treating the whole thing as text if JSON parsing fails
+            structured_llm_output = StructuredLLMOutput(main_answer_text=raw_json_string if raw_json_string.strip() else "I apologize, I encountered an issue processing the response format.")
+        except Exception as p_exc: # Pydantic validation error
+            logger.error(f"Pydantic validation failed for LLM output: {raw_json_string[:500]}. Error: {p_exc}")
+            structured_llm_output = StructuredLLMOutput(main_answer_text=raw_json_string if raw_json_string.strip() else "I apologize, I encountered an issue with the response structure.")
 
-    except EnvironmentError as e: # Catch if GCP_PROJECT_ID is not set
+
+    except EnvironmentError as e:
         logger.error(f"Configuration error for LLM: {e}")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI service configuration error: {e}")
     except Exception as e:
         logger.error(f"LLM Communication/Processing Error: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="There was an issue communicating with the AI assistance service.")
 
+    if not structured_llm_output: # Should not happen if try/except is robust
+        structured_llm_output = StructuredLLMOutput(main_answer_text="I'm sorry, I couldn't formulate a response at this moment.")
+
     processing_end_time = time.perf_counter()
     processing_time_ms = (processing_end_time - processing_start_time) * 1000
 
-    debug_information = DebugInfo(
+    debug_information = DebugInfo( #
         llm_model_name_used=llm_client.model_name,
         processing_time_ms=round(processing_time_ms, 2),
-        prompt_token_count=llm_response_data.get("prompt_token_count"),
-        response_token_count=llm_response_data.get("response_token_count"),
+        prompt_token_count=llm_raw_response_data.get("prompt_token_count"),
+        response_token_count=llm_raw_response_data.get("response_token_count"),
         language_used=effective_language_code
     )
-    # Only include prompt sample in debug mode (controlled by env var, e.g.)
-    if os.getenv("UPLAS_DEBUG_MODE", "false").lower() == "true":
+    if os.getenv("UPLAS_DEBUG_MODE", "false").lower() == "true": #
         debug_information.prompt_sent_to_llm_sample = (system_prompt_for_llm + "\n" + \
             "\n".join([f"{turn['role']}: {turn['content'][:100]}..." for turn in llm_conversation_history]))[:1000] + "..."
 
-
     return AiTutorQueryResponse(
-        answer_text=answer_text,
-        suggested_follow_up_questions=llm_response_data.get("suggested_follow_up_questions", []),
-        generated_analogies=llm_response_data.get("generated_analogies", []),
-        # confidence_score=0.88, # Mocked, LLM might not provide this directly
+        answer_text=structured_llm_output.main_answer_text,
+        suggested_follow_up_questions=structured_llm_output.suggested_follow_ups,
+        generated_analogies=[GeneratedAnalogy(analogy=text) for text in structured_llm_output.generated_analogies_for_answer],
+        confidence_score=structured_llm_output.answer_confidence_score,
         debug_info=debug_information
     )
 
-# --- Health Check Endpoint ---
-@app.get("/health", status_code=status.HTTP_200_OK)
+# --- Health Check Endpoint (existing) ---
+@app.get("/health", status_code=status.HTTP_200_OK) #
 async def health_check():
     return {"status": "healthy", "service": "PersonalizedTutorNLP_LLM_Agent"}
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": #
     import uvicorn
-    # Ensure environment variables are set for local testing if needed
-    # Example: GCP_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS (if not using ADC from gcloud)
     if not GCP_PROJECT_ID:
         print("Warning: GCP_PROJECT_ID is not set. Please set this environment variable.")
-    
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8001)))
-
-# To run this locally (ensure GCP auth is set up, e.g., `gcloud auth application-default login`):
-# GCP_PROJECT_ID="your-gcp-project-id" python main.py
-# or using uvicorn directly:
-# GCP_PROJECT_ID="your-gcp-project-id" uvicorn main:app --reload --port 8001
