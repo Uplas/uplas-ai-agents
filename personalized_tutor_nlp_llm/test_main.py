@@ -1,11 +1,12 @@
 # uplas-ai-agents/personalized_tutor_nlp_llm/test_main.py
 import pytest
+import pytest_asyncio # For async fixtures
 from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock, ANY
+from unittest.mock import patch, AsyncMock, ANY, MagicMock # ANY and MagicMock are useful
 import os
+import json # For creating JSON string mocks
 
-# Import the FastAPI app and Pydantic models from main.py
-# Assuming main.py is in the same directory or Python path is configured
+# Import the FastAPI app and Pydantic models from our refined main.py
 from .main import (
     app,
     AiTutorQueryRequest,
@@ -13,231 +14,325 @@ from .main import (
     TutorRequestContext,
     ConversationTurn,
     ConversationRole,
-    SUPPORTED_LANGUAGES, # Import for testing language validation
+    # InnovateAI Enhanced/New Models:
+    NlpModuleProcessed, # Expected structure from NLP content fetcher
+    NlpLessonProcessed,
+    NlpTopicProcessed,
+    StructuredLLMOutput, # Expected JSON structure from LLM
+    AiTutorQueryResponse,
+    GeneratedAnalogy,
+    SUPPORTED_LANGUAGES,
     DEFAULT_LANGUAGE
-    # We will patch llm_client directly where it's used in the endpoint
 )
 
-# Set environment variables for testing if not already set globally for tests
-# These are needed because main.py might try to init VertexAI platform
+# Set environment variables for testing (as in original test file)
+# These prevent actual VertexAI initialization during tests.
 os.environ["GCP_PROJECT_ID"] = "test-gcp-project-id"
 os.environ["GCP_LOCATION"] = "test-gcp-location"
-os.environ["LLM_MODEL_NAME"] = "test-gemini-model"
+os.environ["LLM_MODEL_NAME"] = "test-gemini-model-tutor"
+# For fetching NLP content
+os.environ["NLP_CONTENT_SERVICE_URL"] = "http://mock-nlp-content-service"
 
-client = TestClient(app) # TestClient for making HTTP requests to the FastAPI app
 
-# --- Fixtures ---
+# Use TestClient for synchronous testing of async FastAPI app
+client = TestClient(app) #
+
+# --- Fixtures (InnovateAI Refined) ---
+
 @pytest.fixture
-def basic_user_profile() -> UserProfileSnapshot:
+def basic_user_profile() -> UserProfileSnapshot: #
     return UserProfileSnapshot(
-        industry="Education",
-        profession="Teacher",
+        industry="Technology",
+        profession="Software Developer",
         country="Kenya",
         city="Nairobi",
-        preferred_tutor_persona="Supportive and clear"
+        preferred_tutor_persona="Direct and technical",
+        career_interest="AI Ethics",
+        learning_goals="Understand advanced NLP techniques."
     )
 
 @pytest.fixture
-def basic_tutor_request_payload(basic_user_profile: UserProfileSnapshot) -> Dict:
+def basic_tutor_request_dict(basic_user_profile: UserProfileSnapshot) -> dict: # Changed from payload to dict for easier modification
+    """Provides a basic, valid request payload as a dictionary."""
     return {
-        "user_id": "test_user_001",
-        "query_text": "What are Python functions?",
-        "user_profile_snapshot": basic_user_profile.model_dump(),
-        "language_code": "en-US"
+        "user_id": "test_user_innovate_001",
+        "query_text": "Explain attention mechanisms in transformers.",
+        "user_profile_snapshot": basic_user_profile.model_dump(exclude_none=True),
+        "language_code": "en-US",
+        "max_tokens_response": 1024
     }
 
 @pytest.fixture
-def mock_llm_successful_response() -> Dict:
-    return {
-        "answer_text": "This is a detailed, personalized answer about Python functions, considering your Teacher profile in Education from Kenya.",
-        "generated_analogies": [{"analogy": "Think of functions like lesson plans."}],
-        "suggested_follow_up_questions": ["How do I define a function?", "What are arguments?"],
-        "prompt_token_count": 150,
-        "response_token_count": 200
-    }
+def mock_structured_llm_output_success() -> StructuredLLMOutput:
+    """InnovateAI: Provides a mock successful StructuredLLMOutput object."""
+    return StructuredLLMOutput(
+        main_answer_text="Attention mechanisms allow models to weigh the importance of different parts of the input sequence. As a Software Developer in Technology from Kenya, think of it like focusing on specific lines of code during a debug session.",
+        suggested_follow_ups=["How is self-attention different?", "What are some applications of transformers?"],
+        generated_analogies_for_answer=["Like a spotlight in a dark room.", "Similar to a dictionary lookup where keys have different relevance."],
+        answer_confidence_score=0.92
+    )
 
 @pytest.fixture
-def mock_llm_config_error_response() -> Dict:
-    # This fixture isn't directly used as a return value for the mock,
-    # but represents a scenario where the LLM client itself raises an EnvironmentError
-    return {"detail": "AI service configuration error: GCP_PROJECT_ID is not configured."}
+def mock_nlp_module_processed_data() -> NlpModuleProcessed:
+    """InnovateAI: Provides mock NLP-processed content for a module."""
+    return NlpModuleProcessed(
+        module_id="nlp_module_transformers_01_processed",
+        module_title="Advanced Transformer Architectures",
+        language_code="en-US",
+        lessons=[
+            NlpLessonProcessed(
+                lesson_id="L1_attention_proc",
+                lesson_title="Understanding Attention Mechanisms",
+                lesson_summary="This lesson details the core concepts of attention in neural networks.",
+                topics=[
+                    NlpTopicProcessed(
+                        topic_id="T1_self_attention_proc",
+                        topic_title="Self-Attention Deep Dive",
+                        key_concepts=["Query, Key, Value", "Scaled Dot-Product Attention"],
+                        content_with_tags="Self-attention allows inputs to interact with each other. <analogy type=\"technical_analogy_needed\" /> It's crucial for understanding context. <difficulty type=\"advanced_detail\" /> Consider this example: <example domain=\"nlp_translation_example_needed\" />. Any questions? <interactive_question_opportunity text_suggestion=\"How does self-attention help in long sequences?\" />"
+                    ),
+                    NlpTopicProcessed(
+                        topic_id="T2_multi_head_proc",
+                        topic_title="Multi-Head Attention",
+                        key_concepts=["Parallel attention layers", "Diverse representations"],
+                        content_with_tags="Multi-head attention runs multiple attention mechanisms in parallel. <visual_aid_suggestion type=\"diagram_needed\" description=\"Diagram showing multiple attention heads\" /> This helps capture different aspects. <difficulty type=\"advanced_detail\" />"
+                    )
+                ]
+            )
+        ]
+    )
+
+@pytest_asyncio.fixture
+async def mock_dependencies(monkeypatch):
+    """
+    InnovateAI: Central fixture to mock key external dependencies:
+    - llm_client.generate_structured_response
+    - fetch_processed_nlp_content
+    """
+    mock_llm_generate = AsyncMock(name="mock_llm_generate_structured_response")
+    mock_fetch_nlp = AsyncMock(name="mock_fetch_processed_nlp_content")
+
+    # Patch where these are instantiated or used in main.py
+    monkeypatch.setattr("personalized_tutor_nlp_llm.main.llm_client.generate_structured_response", mock_llm_generate)
+    monkeypatch.setattr("personalized_tutor_nlp_llm.main.fetch_processed_nlp_content", mock_fetch_nlp)
+    
+    return {
+        "llm_generate": mock_llm_generate,
+        "fetch_nlp": mock_fetch_nlp
+    }
 
 
-# --- Test Cases ---
+# --- Test Cases (InnovateAI Refined & New) ---
 
-@patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.llm_client.generate_response', new_callable=AsyncMock)
-async def test_ask_tutor_endpoint_success_basic_query(
-    mock_generate_llm_response: AsyncMock,
-    basic_tutor_request_payload: Dict,
-    mock_llm_successful_response: Dict
+async def test_ask_tutor_success_with_nlp_content(
+    mock_dependencies: Dict[str, AsyncMock], # Use the central mock fixture
+    basic_tutor_request_dict: dict,
+    mock_structured_llm_output_success: StructuredLLMOutput,
+    mock_nlp_module_processed_data: NlpModuleProcessed
 ):
-    """Test the main endpoint with a valid basic request and successful LLM call."""
-    mock_generate_llm_response.return_value = mock_llm_successful_response
+    """InnovateAI Test: Successful query, utilizes fetched NLP content, and parses structured LLM response."""
+    mock_dependencies["fetch_nlp"].return_value = mock_nlp_module_processed_data
+    mock_dependencies["llm_generate"].return_value = { # LLM client returns this dict
+        "raw_response_text": mock_structured_llm_output_success.model_dump_json(),
+        "prompt_token_count": 180,
+        "response_token_count": 220
+    }
 
-    response = client.post("/v1/ask-tutor", json=basic_tutor_request_payload)
+    payload = basic_tutor_request_dict.copy()
+    payload["context"] = {
+        "module_id": "nlp_module_transformers_01_processed", # To trigger NLP fetch
+        "topic_id": "T1_self_attention_proc" # To focus on a specific topic
+    }
 
-    assert response.status_code == 200
+    response = client.post("/v1/ask-tutor", json=payload)
+
+    assert response.status_code == status.HTTP_200_OK
     data = response.json()
-    assert "answer_text" in data
-    assert "Python functions" in data["answer_text"] # Check if it's related
-    assert "Teacher" in data["answer_text"] # Check for personalization cue
-    assert data["suggested_follow_up_questions"] == mock_llm_successful_response["suggested_follow_up_questions"]
+    
+    # Validate response structure based on AiTutorQueryResponse and StructuredLLMOutput
+    assert data["answer_text"] == mock_structured_llm_output_success.main_answer_text
+    assert data["suggested_follow_up_questions"] == mock_structured_llm_output_success.suggested_follow_ups
+    assert len(data["generated_analogies"]) == len(mock_structured_llm_output_success.generated_analogies_for_answer)
+    assert data["generated_analogies"][0]["analogy"] == mock_structured_llm_output_success.generated_analogies_for_answer[0]
+    assert data["confidence_score"] == mock_structured_llm_output_success.answer_confidence_score
     assert "debug_info" in data
-    assert data["debug_info"]["llm_model_name_used"] == os.getenv("LLM_MODEL_NAME")
-    assert data["debug_info"]["language_used"] == basic_tutor_request_payload["language_code"]
+    assert data["debug_info"]["language_used"] == payload["language_code"]
 
-    # Verify llm_client.generate_response was called
-    mock_generate_llm_response.assert_awaited_once()
-    call_args = mock_generate_llm_response.call_args[1] # Keyword arguments
-    assert "system_prompt" in call_args
-    assert "conversation_turns" in call_args
-    assert len(call_args["conversation_turns"]) == 1 # Only the current user query
-    assert call_args["conversation_turns"][0]["content"] == basic_tutor_request_payload["query_text"]
-    assert basic_tutor_request_payload["language_code"] in call_args["system_prompt"]
+    # Verify mocks were called
+    mock_dependencies["fetch_nlp"].assert_awaited_once_with(
+        payload["context"]["module_id"],
+        payload["context"]["topic_id"],
+        payload["language_code"]
+    )
+    mock_dependencies["llm_generate"].assert_awaited_once()
+    
+    # Verify system prompt content (deeper inspection)
+    call_args = mock_dependencies["llm_generate"].call_args[1] # Keyword arguments
+    system_prompt_sent = call_args["system_prompt"]
+    assert "InnovateAI Content Interaction Instructions" in system_prompt_sent
+    assert mock_nlp_module_processed_data.lessons[0].topics[0].content_with_tags in system_prompt_sent # Check if NLP content snippet is there
+    assert "Your entire response MUST be a single, valid JSON object" in system_prompt_sent
+    assert StructuredLLMOutput.model_json_schema(indent=2) in system_prompt_sent # Check schema in prompt
 
 
-@patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.llm_client.generate_response', new_callable=AsyncMock)
-async def test_ask_tutor_with_context_and_history(
-    mock_generate_llm_response: AsyncMock,
+async def test_ask_tutor_empathetic_project_remediation(
+    mock_dependencies: Dict[str, AsyncMock],
     basic_user_profile: UserProfileSnapshot,
-    mock_llm_successful_response: Dict
+    mock_structured_llm_output_success: StructuredLLMOutput,
+    mock_nlp_module_processed_data: NlpModuleProcessed # Assume some relevant course context
 ):
-    """Test when context and conversation history are provided."""
-    mock_generate_llm_response.return_value = mock_llm_successful_response
+    """InnovateAI Test: Scenario where tutor provides empathetic feedback for a failed project."""
+    mock_dependencies["fetch_nlp"].return_value = mock_nlp_module_processed_data
+    mock_dependencies["llm_generate"].return_value = {
+        "raw_response_text": mock_structured_llm_output_success.model_dump_json(), # LLM responds with guidance
+        "prompt_token_count": 250, "response_token_count": 300
+    }
 
     payload = {
-        "user_id": "test_user_002",
-        "query_text": "Explain this more simply.",
-        "user_profile_snapshot": basic_user_profile.model_dump(),
-        "language_code": "fr-FR",
-        "context": {
-            "topic_id": "topic_python_lists_id",
-            "current_topic_title": "Python Lists Fundamentals",
-            "project_assessment_feedback": "User needs to focus on list comprehensions."
-        },
-        "conversation_history": [
-            {"role": "user", "content": "What are lists?"},
-            {"role": "assistant", "content": "Lists are ordered collections."}
-        ]
+        "user_id": "test_user_proj_fail_007",
+        "query_text": "I failed my project on 'Transformer Performance Analysis'. Can you help me understand why?",
+        "user_profile_snapshot": basic_user_profile.model_dump(exclude_none=True),
+        "language_code": "en-US",
+        "context": TutorRequestContext(
+            module_id=mock_nlp_module_processed_data.module_id, # Link to relevant module
+            current_project_title="Transformer Performance Analysis",
+            project_assessment_feedback="The analysis lacked depth in evaluating different optimizers, and the report structure was unclear."
+        ).model_dump(exclude_none=True)
     }
-    # Mock the Django content fetcher
-    with patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.fetch_course_content_from_django', new_callable=AsyncMock) as mock_fetch_content:
-        mock_fetch_content.return_value = "Mocked course content about Python lists."
-        
-        response = client.post("/v1/ask-tutor", json=payload)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["debug_info"]["language_used"] == "fr-FR"
+    response = client.post("/v1/ask-tutor", json=payload)
+    assert response.status_code == status.HTTP_200_OK
 
-    mock_fetch_content.assert_awaited_once_with("topic_python_lists_id", None, "fr-FR")
-    
-    mock_generate_llm_response.assert_awaited_once()
-    call_args = mock_generate_llm_response.call_args[1]
-    assert "fr-FR" in call_args["system_prompt"] # Check language in system prompt
-    assert "Mocked course content about Python lists." in call_args["system_prompt"]
-    assert "User needs to focus on list comprehensions." in call_args["system_prompt"] # Check assessment feedback in prompt
-    assert len(call_args["conversation_turns"]) == 3 # 2 from history + 1 current query
-    assert call_args["conversation_turns"][0]["content"] == "What are lists?"
-    assert call_args["conversation_turns"][1]["content"] == "Lists are ordered collections."
-    assert call_args["conversation_turns"][2]["content"] == "Explain this more simply."
+    mock_dependencies["llm_generate"].assert_awaited_once()
+    system_prompt_sent = mock_dependencies["llm_generate"].call_args[1]["system_prompt"]
+    assert "InnovateAI Guidance for Project Remediation" in system_prompt_sent
+    assert "Adopt an **Empathetic Mentor** role" in system_prompt_sent
+    assert payload["context"]["project_assessment_feedback"] in system_prompt_sent
 
 
-def test_ask_tutor_invalid_language_code(basic_tutor_request_payload: Dict):
-    """Test with an unsupported language code, expecting fallback to default."""
-    payload = basic_tutor_request_payload.copy()
-    payload["language_code"] = "xx-XX" # Invalid language
-
-    # We don't need to mock the LLM call itself for this validation test,
-    # but if it proceeds far enough to call it, we should ensure it uses the default.
-    with patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.llm_client.generate_response', new_callable=AsyncMock) as mock_llm_call:
-        mock_llm_call.return_value = {"answer_text": "Fallback response"} # Dummy response
-        response = client.post("/v1/ask-tutor", json=payload)
-
-    assert response.status_code == 200 # The request itself is valid after Pydantic coercion
-    data = response.json()
-    assert data["debug_info"]["language_used"] == DEFAULT_LANGUAGE # Should have fallen back
-
-    # Check that the system prompt passed to LLM (if called) used the default language
-    mock_llm_call.assert_awaited_once()
-    call_args = mock_llm_call.call_args[1]
-    assert DEFAULT_LANGUAGE in call_args["system_prompt"]
-
-
-def test_ask_tutor_invalid_request_missing_query(basic_user_profile: UserProfileSnapshot):
-    """Test request validation for missing query_text."""
-    invalid_payload = {
-        "user_id": "test_user_003",
-        "user_profile_snapshot": basic_user_profile.model_dump()
-        # query_text is missing
-    }
-    response = client.post("/v1/ask-tutor", json=invalid_payload)
-    assert response.status_code == 422 # FastAPI's Unprocessable Entity
-    assert any(err["loc"] == ["body", "query_text"] for err in response.json()["detail"])
-
-
-@patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.llm_client.generate_response', new_callable=AsyncMock)
-async def test_ask_tutor_llm_call_failure(
-    mock_generate_llm_response: AsyncMock,
-    basic_tutor_request_payload: Dict
+async def test_ask_tutor_llm_returns_invalid_json(
+    mock_dependencies: Dict[str, AsyncMock],
+    basic_tutor_request_dict: dict,
+    mock_nlp_module_processed_data: NlpModuleProcessed
 ):
-    """Test error handling if the LLM call fails with a generic exception."""
-    mock_generate_llm_response.side_effect = Exception("Simulated LLM API Error")
+    """InnovateAI Test: LLM returns a non-JSON string when JSON was expected."""
+    mock_dependencies["fetch_nlp"].return_value = mock_nlp_module_processed_data
+    mock_dependencies["llm_generate"].return_value = {
+        "raw_response_text": "This is not JSON, just plain text.", # Invalid JSON
+        "prompt_token_count": 100, "response_token_count": 10
+    }
+    payload = basic_tutor_request_dict.copy()
+    payload["context"] = {"module_id": mock_nlp_module_processed_data.module_id}
 
-    response = client.post("/v1/ask-tutor", json=basic_tutor_request_payload)
+
+    response = client.post("/v1/ask-tutor", json=payload)
+    assert response.status_code == status.HTTP_200_OK # Endpoint should handle gracefully
+    data = response.json()
+    # Check for fallback behavior defined in main.py
+    assert "InnovateAI Apology: I couldn't structure my thoughts perfectly" in data["answer_text"]
+    assert data["answer_text"].endswith("This is not JSON, just plain text.")
+
+
+async def test_ask_tutor_llm_returns_json_not_matching_schema(
+    mock_dependencies: Dict[str, AsyncMock],
+    basic_tutor_request_dict: dict,
+    mock_nlp_module_processed_data: NlpModuleProcessed
+):
+    """InnovateAI Test: LLM returns valid JSON, but it doesn't match StructuredLLMOutput schema."""
+    mock_dependencies["fetch_nlp"].return_value = mock_nlp_module_processed_data
+    invalid_schema_json_str = json.dumps({"unexpected_field": "some value", "main_answer_text_typo": "Answer here"})
+    mock_dependencies["llm_generate"].return_value = {
+        "raw_response_text": invalid_schema_json_str,
+        "prompt_token_count": 100, "response_token_count": 10
+    }
+    payload = basic_tutor_request_dict.copy()
+    payload["context"] = {"module_id": mock_nlp_module_processed_data.module_id}
+
+    response = client.post("/v1/ask-tutor", json=payload)
+    assert response.status_code == status.HTTP_200_OK # Graceful handling
+    data = response.json()
+    assert "InnovateAI Alert: My response structure was a bit off" in data["answer_text"]
+    assert data["answer_text"].endswith(invalid_schema_json_str)
+
+
+async def test_ask_tutor_nlp_content_fetch_fails(
+    mock_dependencies: Dict[str, AsyncMock],
+    basic_tutor_request_dict: dict,
+    mock_structured_llm_output_success: StructuredLLMOutput
+):
+    """InnovateAI Test: fetch_processed_nlp_content returns None (e.g., content not found)."""
+    mock_dependencies["fetch_nlp"].return_value = None # Simulate NLP content not found
+    mock_dependencies["llm_generate"].return_value = {
+        "raw_response_text": mock_structured_llm_output_success.model_dump_json(),
+        "prompt_token_count": 90, "response_token_count": 150
+    }
     
-    assert response.status_code == 503
+    payload = basic_tutor_request_dict.copy()
+    payload["context"] = {"module_id": "non_existent_module_id"}
+
+    response = client.post("/v1/ask-tutor", json=payload)
+    assert response.status_code == status.HTTP_200_OK # Agent should still try to answer
+
+    mock_dependencies["fetch_nlp"].assert_awaited_once_with(
+        payload["context"]["module_id"], ANY, payload["language_code"]
+    )
+    mock_dependencies["llm_generate"].assert_awaited_once()
+    system_prompt_sent = mock_dependencies["llm_generate"].call_args[1]["system_prompt"]
+    # Verify that the prompt indicates no specific course material was found
+    assert "No specific course material was found for this query" in system_prompt_sent
+    assert "InnovateAI Content Interaction Instructions" not in system_prompt_sent # As no NLP content with tags was injected
+
+
+async def test_ask_tutor_llm_call_general_exception(
+    mock_dependencies: Dict[str, AsyncMock],
+    basic_tutor_request_dict: dict
+):
+    """InnovateAI Test: LLM client's generate_structured_response raises a generic Exception."""
+    mock_dependencies["fetch_nlp"].return_value = None # NLP fetch outcome doesn't matter here
+    mock_dependencies["llm_generate"].side_effect = Exception("Simulated unexpected LLM API error")
+
+    response = client.post("/v1/ask-tutor", json=basic_tutor_request_dict)
+    
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     assert "issue communicating with the AI assistance service" in response.json()["detail"].lower()
 
 
-@patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.llm_client.generate_response', new_callable=AsyncMock)
-async def test_ask_tutor_llm_config_env_error(
-    mock_generate_llm_response: AsyncMock,
-    basic_tutor_request_payload: Dict
-):
-    """Test error handling if LLM client raises EnvironmentError (e.g., GCP_PROJECT_ID missing)."""
-    mock_generate_llm_response.side_effect = EnvironmentError("GCP_PROJECT_ID is not configured.")
-
-    response = client.post("/v1/ask-tutor", json=basic_tutor_request_payload)
-    
-    assert response.status_code == 503 # Service Unavailable
-    assert "ai service configuration error" in response.json()["detail"].lower()
-    assert "gcp_project_id is not configured" in response.json()["detail"].lower()
-
-
-@patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.fetch_course_content_from_django', new_callable=AsyncMock)
-@patch('uplas_ai_agents.personalized_tutor_nlp_llm.main.llm_client.generate_response', new_callable=AsyncMock)
-async def test_ask_tutor_django_fetch_failure(
-    mock_llm_call: AsyncMock,
-    mock_django_fetch: AsyncMock,
-    basic_tutor_request_payload: Dict,
-    mock_llm_successful_response: Dict
-):
-    """Test scenario where fetching course content from Django fails, but agent still proceeds."""
-    mock_django_fetch.side_effect = Exception("Django connection error")
-    mock_llm_call.return_value = mock_llm_successful_response # LLM should still be called
-
-    payload_with_context = basic_tutor_request_payload.copy()
-    payload_with_context["context"] = {"topic_id": "some_topic_id"}
-
-    response = client.post("/v1/ask-tutor", json=payload_with_context)
-
-    assert response.status_code == 200 # Agent should handle this gracefully and proceed
-    mock_django_fetch.assert_awaited_once()
-    mock_llm_call.assert_awaited_once() # Ensure LLM was still called
-    
-    # Check that the system prompt does not contain the course content placeholder if fetch failed
-    # (or contains a message indicating content couldn't be fetched)
-    call_args = mock_llm_call.call_args[1]
-    assert "--- Relevant Information/Course Material Snippet ---" not in call_args["system_prompt"]
-
-
-def test_health_check_endpoint():
+def test_health_check_endpoint_healthy(monkeypatch): # Modified from original to use monkeypatch for env var
+    """InnovateAI Test: Health check returns healthy when configured."""
+    # Env vars are set by global os.environ or could be managed by a fixture
+    # Ensuring NLP_CONTENT_SERVICE_URL is not the default for a fully healthy check
+    monkeypatch.setenv("NLP_CONTENT_SERVICE_URL", "http://actual-nlp-service")
     response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "healthy", "service": "PersonalizedTutorNLP_LLM_Agent"}
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {
+        "status": "healthy",
+        "service": "PersonalizedTutorNLP_LLM_Agent_InnovateAI",
+        "innovate_ai_enhancements_active": True
+    }
 
-# To run these tests:
-# From within uplas-ai-agents/personalized_tutor_nlp_llm/
-# pytest
+def test_health_check_unhealthy_missing_gcp_id(monkeypatch):
+    """InnovateAI Test: Health check for missing GCP_PROJECT_ID."""
+    with patch('personalized_tutor_nlp_llm.main.GCP_PROJECT_ID', None): # Temporarily override
+        response = client.get("/health")
+        assert response.status_code == status.HTTP_200_OK # Health check endpoint itself works
+        data = response.json()
+        assert data["status"] == "unhealthy"
+        assert "GCP_PROJECT_ID not configured" in data["reason"]
 
+
+def test_health_check_warning_nlp_service_url(monkeypatch):
+    """InnovateAI Test: Health check logs warning if NLP_CONTENT_SERVICE_URL is default/missing but still returns healthy."""
+    # Using default "your-backend-service" URL from main.py
+    monkeypatch.setenv("NLP_CONTENT_SERVICE_URL", "http://your-backend-service/api/internal/get-processed-nlp-content")
+    with patch.object(logging.getLogger("personalized_tutor_nlp_llm.main"), 'warning') as mock_log_warning:
+        response = client.get("/health")
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["status"] == "healthy" # Still healthy, but a warning should be logged
+        mock_log_warning.assert_any_call(
+            "InnovateAI Health Warning: NLP_CONTENT_SERVICE_URL is not configured or using default. NLP content fetching will be mocked/fail."
+        )
+
+
+# Remember to run tests with: pytest
+# Ensure pytest-asyncio is installed: pip install pytest-asyncio
