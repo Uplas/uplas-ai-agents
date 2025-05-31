@@ -1,6 +1,8 @@
-# shared_ai_libs/requirements.txt
-# Add dependencies for the shared library itself, if any.
-# If it only contains constants, this might be empty or just for dev tools.
-# If you add Pydantic models here:
+# If Pydantic models are moved into shared_ai_libs:
 # pydantic>=2.0,<3.0
 
+# Add other common utility dependencies if any.
+# For now, if it only contains Python constants/enums, this can be empty.
+# Linters/formatters if you treat this as a separately testable/lintable package:
+# flake8>=6.0.0,<7.0.0
+# black>=23.0.0,<24.0.0
