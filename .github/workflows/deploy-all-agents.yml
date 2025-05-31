@@ -1,90 +1,40 @@
-# .github/workflows/deploy-all-agents.yml
-name: Deploy All AI Agents to Google Cloud Run
+name: Deploy All Uplas AI Agents
 
 on:
+  workflow_dispatch: # Manual trigger
   push:
     branches:
-      - main
-    paths:
-      # Trigger if any agent code or shared libs change
-      - 'personalized_tutor_nlp_llm/**'
-      - 'tts_agent/**'
-      - 'ttv_agent/**'
-      - 'project_generator_agent/**'
-      - 'shared_ai_libs/**'
-      - '.github/workflows/deploy-all-agents.yml'
-  workflow_dispatch:
-
-env:
-  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GCP_ARTIFACT_REGISTRY_REPOSITORY: 'uplas-ai-agents'
-  GCP_REGION: 'us-central1'
+      - main # Or your main deployment branch, if deploying all on merge to main
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy ${{ matrix.agent.name }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: 'read'
-      id-token: 'write'
-    strategy:
-      matrix:
-        agent:
-          - name: 'personalized-tutor-nlp-llm'
-            directory: 'personalized_tutor_nlp_llm'
-            # Add specific env vars needed only by this agent for deployment step
-            # These would be constructed carefully in the deploy step
-          - name: 'tts-agent'
-            directory: 'tts_agent'
-          - name: 'ttv-agent'
-            directory: 'ttv_agent'
-          - name: 'project-generator-agent'
-            directory: 'project_generator_agent'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  deploy-nlp-content-agent:
+    uses: ./.github/workflows/ai-agent-deploy-gcp.yml
+    with:
+      agent_name: 'nlp-content-agent'
+      agent_directory: './nlp_content_agent' # Ensure this path is correct
+      service_account_email: 'your-cloud-run-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+    secrets: inherit # Pass down secrets like GCP_SA_KEY, GCP_PROJECT_ID
 
-      - name: Authenticate to Google Cloud
-        uses: 'google-github-actions/auth@v2'
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+  deploy-ai-tutor:
+    uses: ./.github/workflows/ai-agent-deploy-gcp.yml
+    needs: deploy-nlp-content-agent # Optional: define dependencies if order matters
+    with:
+      agent_name: 'ai-tutor-agent'
+      agent_directory: './personalized_tutor_nlp_llm'
+      service_account_email: 'your-cloud-run-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+      # Add specific environment variables for this agent here if needed
+      # environment_variables: |
+      #   LLM_MODEL_NAME=gemini-1.5-flash-001
+      #   NLP_CONTENT_SERVICE_URL=https://nlp-content-agent-....run.app # Example
+    secrets: inherit
 
-      - name: Set up Cloud SDK
-        uses: 'google-github-actions/setup-gcloud@v2'
+  # ... Jobs for TTS, TTV, Project Generation & Assessment Agents ...
 
-      # Handle shared_ai_libs (see discussion below)
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./${{ matrix.agent.directory }}
-          push: true
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/${{ matrix.agent.name }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Deploy to Google Cloud Run
-        uses: 'google-github-actions/deploy-cloudrun@v2'
-        with:
-          service: ${{ matrix.agent.name }}
-          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/${{ matrix.agent.name }}:${{ github.sha }}
-          region: ${{ env.GCP_REGION }}
-          env_vars: | # This part needs to be dynamic based on matrix.agent.name
-            GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}
-            GCP_LOCATION=${{ env.GCP_REGION }}
-            # --- AGENT-SPECIFIC ENV VARS START ---
-            ${{ matrix.agent.name == 'personalized-tutor-nlp-llm' && format('LLM_MODEL_NAME=gemini-1.5-flash-001') || '' }}
-            ${{ matrix.agent.name == 'tts-agent' && format('TTS_AUDIO_GCS_BUCKET_NAME={0}', secrets.TTS_BUCKET_NAME_SECRET) || '' }}
-            # ... and so on for TTV and Project Generator, referencing secrets for sensitive values
-            # For TTV:
-            ${{ matrix.agent.name == 'ttv-agent' && format('AI_TUTOR_AGENT_URL=https://personalized-tutor-nlp-llm-YOUR_HASH-uc.a.run.app') || '' }} # You'll need actual service URLs
-            ${{ matrix.agent.name == 'ttv-agent' && format('TTS_AGENT_URL=https://tts-agent-YOUR_HASH-uc.a.run.app') || '' }}
-            ${{ matrix.agent.name == 'ttv-agent' && format('DJANGO_TTV_CALLBACK_URL={0}', secrets.DJANGO_TTV_CALLBACK_URL) || '' }}
-            ${{ matrix.agent.name == 'ttv-agent' && format('THIRD_PARTY_AVATAR_API_KEY={0}', secrets.THIRD_PARTY_AVATAR_API_KEY) || '' }}
-            ${{ matrix.agent.name == 'ttv-agent' && format('THIRD_PARTY_AVATAR_BASE_URL={0}', secrets.THIRD_PARTY_AVATAR_BASE_URL) || '' }}
-            # ... etc.
-          # --- AGENT-SPECIFIC ENV VARS END ---
+  # Example for Project Generator Agent
+  deploy-project-generator:
+    uses: ./.github/workflows/ai-agent-deploy-gcp.yml
+    with:
+      agent_name: 'project-generator-assessment-agent'
+      agent_directory: './project_generator_agent'
+      service_account_email: 'your-cloud-run-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+    secrets: inherit
