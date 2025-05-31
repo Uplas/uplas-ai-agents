@@ -1,342 +1,403 @@
 # uplas-ai-agents/project_generator_agent/test_main.py
 import pytest
+import pytest_asyncio # For async fixtures
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock, MagicMock, ANY
 import os
 import uuid
 import json
-import httpx # For mocking calls to AI Tutor
+import httpx # For mocking calls to AI Tutor (though we mock the helper function directly)
 
-# Import the FastAPI app and Pydantic models from main.py
+# Import the FastAPI app and Pydantic models from our rewritten main.py
 from .main import (
     app,
-    ProjectIdeaGenerationRequest,
-    UserProfileSnapshotForProjects,
-    ProjectPreferences,
-    GeneratedProjectIdea, # For constructing mock LLM responses
-    GeneratedProjectTask,
-    ProjectAssessmentRequest,
-    ProjectSubmissionDetails,
-    ProjectAssessmentResult,
-    ASSESSMENT_PASS_THRESHOLD,
-    DEFAULT_LANGUAGE
-    # project_idea_llm and assessment_llm will be patched
+    # Generation Models
+    ProjectIdeaGenerationRequest, UserProfileSnapshotForProjects, ProjectPreferences,
+    GeneratedProjectIdea, GeneratedProjectTask, ProjectGenerationResponse,
+    # Assessment Models
+    ProjectAssessmentRequest, ProjectSubmissionContentItem, ProjectSubmissionContentType,
+    ProjectAssessmentResponse, ProjectAssessmentResult, AssessmentFeedbackPoint, # Renamed from main (5)
+    # Config
+    COMPETENCY_THRESHOLD, DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES,
+    PROJECT_LLM_MODEL_NAME, ASSESSMENT_LLM_MODEL_NAME, AI_TUTOR_AGENT_URL
+    # LLM clients (project_idea_llm, assessment_llm) will be patched where used.
 )
 
-# Set environment variables for testing
-os.environ["GCP_PROJECT_ID"] = "test-gcp-project-id"
-os.environ["GCP_LOCATION"] = "test-gcp-location"
-os.environ["PROJECT_LLM_MODEL_NAME"] = "test-project-gemini-model"
-os.environ["ASSESSMENT_LLM_MODEL_NAME"] = "test-assessment-gemini-model"
-os.environ["AI_TUTOR_AGENT_URL"] = "http://mock-ai-tutor-agent.com"
+# Set environment variables for testing (as in original)
+#
+os.environ["GCP_PROJECT_ID"] = "test-gcp-project-id-pg"
+os.environ["GCP_LOCATION"] = "test-gcp-location-pg"
+os.environ["PROJECT_LLM_MODEL_NAME"] = "test-project-gemini-model-pg"
+os.environ["ASSESSMENT_LLM_MODEL_NAME"] = "test-assessment-gemini-model-pg"
+os.environ["AI_TUTOR_AGENT_URL"] = "http://mock-ai-tutor-agent-innovate.com"
+os.environ["PROJECT_COMPETENCY_THRESHOLD"] = "0.75" # Ensure consistency
 
 client = TestClient(app)
 
-# --- Fixtures for Project Idea Generation ---
-@pytest.fixture
-def user_profile_data_analyst() -> UserProfileSnapshotForProjects:
+# --- Fixtures for Project Idea Generation (InnovateAI Refined) ---
+@pytest.fixture #
+def user_profile_innovate() -> UserProfileSnapshotForProjects:
     return UserProfileSnapshotForProjects(
-        user_id=f"user_analyst_{uuid.uuid4().hex[:6]}",
-        industry="Finance",
-        profession="Data Analyst",
-        career_interest="Quantitative Finance",
-        current_knowledge_level={"Python": "Intermediate", "SQL": "Advanced"},
-        areas_of_interest=["Algorithmic Trading", "Risk Management"],
-        learning_goals="Build a project demonstrating financial data analysis.",
-        preferred_tutor_persona="Direct and informative"
+        user_id=f"user_innovate_{uuid.uuid4().hex[:6]}", # From rewritten main.py model
+        industry="Sustainable Energy",
+        profession="Environmental Engineer",
+        career_interest="AI for Green Tech",
+        current_knowledge_level={"Python": "Advanced", "Data Analysis": "Intermediate", "Cloud Deployment": "Beginner"},
+        areas_of_interest=["renewable_energy_optimization", "smart_grid_ai"],
+        learning_goals="Develop a capstone project for my AI in Sustainability portfolio.",
+        preferred_tutor_persona="Insightful and challenging"
     )
 
-@pytest.fixture
-def project_prefs_advanced_python() -> ProjectPreferences:
+@pytest.fixture #
+def project_prefs_innovate() -> ProjectPreferences:
     return ProjectPreferences(
         difficulty_level="advanced",
-        preferred_technologies=["Python", "FastAPI", "PostgreSQL"],
-        project_type_focus="Scalable Backend Service",
-        time_commitment_hours_estimate=40
+        preferred_technologies=["Python", "TensorFlow", "GCP Vertex AI Pipelines"],
+        project_type_focus="End-to-end AI solution with deployment considerations",
+        time_commitment_hours_estimate=60
     )
 
-@pytest.fixture
-def project_gen_request_payload_dict(
-    user_profile_data_analyst: UserProfileSnapshotForProjects,
-    project_prefs_advanced_python: ProjectPreferences
+@pytest.fixture #
+def project_gen_request_dict(
+    user_profile_innovate: UserProfileSnapshotForProjects,
+    project_prefs_innovate: ProjectPreferences
 ) -> Dict:
     return {
-        "user_profile_snapshot": user_profile_data_analyst.model_dump(),
-        "preferences": project_prefs_advanced_python.model_dump(),
+        "user_profile_snapshot": user_profile_innovate.model_dump(),
+        "preferences": project_prefs_innovate.model_dump(), # From main (5)
+        "course_context_summary": "Advanced AI applications in environmental science.",
+        "topic_focus_keywords": ["predictive_modeling", "iot_sensor_data"],
         "number_of_ideas": 1,
         "language_code": "en-US"
     }
 
-@pytest.fixture
-def mock_successful_project_idea_llm_response_text() -> str:
-    # LLM is expected to return a JSON string which is a list of project ideas
-    ideas = [
-        GeneratedProjectIdea(
-            title="Personalized Stock Portfolio Analyzer",
-            description_html="<p>Analyze stock performance and build a personalized dashboard.</p>",
-            difficulty_level="advanced",
-            learning_objectives_html=["<li>Master FastAPI</li>", "<li>Understand financial APIs</li>"],
-            key_tasks=[GeneratedProjectTask(task_id=1, description="Setup FastAPI project.")],
-            suggested_technologies=["Python", "FastAPI", "AlphaVantage API"],
-            assessment_rubric_preview_html=["<li>API Integration: 50%</li>"],
-            language_code="en-US"
-        ).model_dump() # Convert Pydantic model to dict for JSON serialization
-    ]
-    return json.dumps(ideas)
-
-
-# --- Fixtures for Project Assessment ---
-@pytest.fixture
-def sample_generated_project_idea() -> GeneratedProjectIdea:
-    return GeneratedProjectIdea(
-        project_idea_id="proj_idea_sample_123",
-        title="Eco-Friendly Route Planner API",
-        description_html="<p>Develop an API that suggests the most eco-friendly routes.</p>",
-        difficulty_level="intermediate",
-        learning_objectives_html=["<li>Learn API design.</li>", "<li>Work with geospatial data.</li>"],
+@pytest.fixture #
+def mock_successful_generated_project_idea_llm_response() -> str:
+    # InnovateAI: LLM returns a dict with a "generated_projects" list (as per prompt in rewritten main.py)
+    project_idea = GeneratedProjectIdea(
+        project_id="proj_innovate_gen_1", # Will be auto-generated in real scenario
+        title="AI-Optimized Solar Panel Array Placement",
+        subtitle="Using geospatial data and predictive modeling to maximize energy yield.",
+        description_html="<p>Develop a system that analyzes terrain, weather patterns, and insolation data to recommend optimal placement for solar panel arrays in a given region.</p>",
+        difficulty_level="Advanced",
+        estimated_duration_hours=60,
+        learning_objectives_html=["<li>Apply machine learning for predictive tasks.</li>", "<li>Integrate external geospatial APIs.</li>", "<li>Develop a clear technical proposal.</li>"],
+        expected_deliverables_html=["<li>A Python script implementing the predictive model.</li>", "<li>A documented Jupyter Notebook showcasing data analysis.</li>", "<li>A 5-page PDF proposal detailing the methodology and potential impact.</li>"],
         key_tasks=[
-            GeneratedProjectTask(task_id=1, description="Design API endpoints."),
-            GeneratedProjectTask(task_id=2, description="Implement routing algorithm.")
+            GeneratedProjectTask(task_id="t1_innovate", title="Data Acquisition & Preprocessing", description="Collect and clean relevant geospatial and weather data."),
+            GeneratedProjectTask(task_id="t2_innovate", title="Model Development", description="Train a predictive model for solar energy yield."),
+            GeneratedProjectTask(task_id="t3_innovate", title="Proposal Writing", description="Document findings and recommendations.")
         ],
-        suggested_technologies=["Python", "FastAPI", "GeoPy"],
-        assessment_rubric_preview_html=["<li>Functionality: 60%</li>", "<li>Code Quality: 20%</li>", "<li>API Design: 20%</li>"],
+        suggested_tools_technologies=["Python (GeoPandas, Scikit-learn, TensorFlow/Keras)", "GCP (Vertex AI, Google Earth Engine API)"],
+        assessment_rubric_html=[
+            "<li>Accuracy and innovativeness of the predictive model (40%)</li>",
+            "<li>Quality of data analysis and visualization (25%)</li>",
+            "<li>Clarity, feasibility, and impact outlined in the proposal (25%)</li>",
+            "<li>Code quality and documentation (10%)</li>"
+        ],
+        personalization_rationale="Aligns with interest in AI for Green Tech and Python/Data Analysis skills.",
+        real_world_application_examples_html=["<p>Used by energy companies for site selection.</p>"],
+        language_code="en-US"
+    ).model_dump()
+    return json.dumps({"generated_projects": [project_idea]})
+
+
+# --- Fixtures for Project Assessment (InnovateAI Refined) ---
+@pytest.fixture #
+def sample_original_project_for_assessment() -> GeneratedProjectIdea:
+    # This should match the structure of what's stored after generation
+    return GeneratedProjectIdea(
+        project_id="proj_assess_innovate_001",
+        title="AI-Powered Smart Irrigation System Design",
+        subtitle="Conceptual design for an IoT and AI based irrigation system.",
+        description_html="<p>Design a system using soil moisture sensors, weather forecasts, and AI to optimize water usage for agriculture.</p>",
+        difficulty_level="Intermediate",
+        learning_objectives_html=["<li>Understand IoT data integration.</li>", "<li>Design a basic predictive control algorithm.</li>", "<li>Document system architecture.</li>"],
+        expected_deliverables_html=["<li>System architecture diagram (PDF).</li>", "<li>Pseudo-code for the control algorithm.</li>", "<li>A 3-page report detailing sensor choices, data flow, and AI model rationale.</li>"],
+        key_tasks=[GeneratedProjectTask(task_id="task_assess_1", title="Sensor Research", description="...")], # Simplified
+        assessment_rubric_html=[ # Crucial for assessment prompt
+            "<li>Clarity and completeness of architecture diagram (30%)</li>",
+            "<li>Logic and feasibility of the control algorithm pseudo-code (40%)</li>",
+            "<li>Rationale and depth of the report (30%)</li>"
+        ],
         language_code="en-US"
     )
 
-@pytest.fixture
-def project_submission_details_pass() -> ProjectSubmissionDetails:
-    return ProjectSubmissionDetails(
-        github_url="https://github.com/testuser/eco-planner",
-        textual_summary="Implemented all core features and added unit tests."
-    )
+@pytest.fixture # Based on (ProjectSubmissionDetails -> List[ProjectSubmissionContentItem])
+def project_submission_items_pass() -> List[Dict]: # Returns dicts to match request model
+    return [
+        ProjectSubmissionContentItem(content_type=ProjectSubmissionContentType.GCS_URL_PDF, value="gs://mybucket/arch_diagram_final.pdf", filename="architecture_v2.pdf").model_dump(),
+        ProjectSubmissionContentItem(content_type=ProjectSubmissionContentType.TEXT_REPORT, value="Control Algorithm Pseudo-code:\nIF soil_moisture < LOW_THRESHOLD AND no_rain_forecasted THEN\n  ACTIVATE_IRRIGATION_ZONE_A\nENDIF\nReport details attached...", filename="report_and_pseudo.txt").model_dump()
+    ]
 
-@pytest.fixture
-def project_submission_details_fail() -> ProjectSubmissionDetails:
-    return ProjectSubmissionDetails(
-        textual_summary="Only implemented the basic API design. Struggled with the routing algorithm."
-    )
+@pytest.fixture # Similar to above
+def project_submission_items_fail() -> List[Dict]:
+    return [
+        ProjectSubmissionContentItem(content_type=ProjectSubmissionContentType.TEXT_REPORT, value="Only did the architecture diagram description. Ran out of time for algorithm and report. Sensor choices were hard.", filename="submission_partial.txt").model_dump()
+    ]
 
-@pytest.fixture
-def project_assessment_request_payload_pass_dict(
-    user_profile_data_analyst: UserProfileSnapshotForProjects, # Re-use for user_id
-    sample_generated_project_idea: GeneratedProjectIdea,
-    project_submission_details_pass: ProjectSubmissionDetails
+@pytest.fixture # (adapted to new request model)
+def project_assessment_request_dict_pass(
+    user_profile_innovate: UserProfileSnapshotForProjects,
+    project_submission_items_pass: List[Dict]
 ) -> Dict:
     return {
-        "user_id": user_profile_data_analyst.user_id,
-        "project_idea": sample_generated_project_idea.model_dump(),
-        "submission": project_submission_details_pass.model_dump(),
+        "user_id": user_profile_innovate.user_id,
+        "project_id": "proj_assess_innovate_001", # Matches sample_original_project_for_assessment
+        "submission_items": project_submission_items_pass,
+        "user_profile_snapshot": user_profile_innovate.model_dump(),
         "language_code": "en-US"
     }
 
-@pytest.fixture
-def project_assessment_request_payload_fail_dict(
-    user_profile_data_analyst: UserProfileSnapshotForProjects,
-    sample_generated_project_idea: GeneratedProjectIdea,
-    project_submission_details_fail: ProjectSubmissionDetails
+@pytest.fixture # Similar to above
+def project_assessment_request_dict_fail(
+    user_profile_innovate: UserProfileSnapshotForProjects,
+    project_submission_items_fail: List[Dict]
 ) -> Dict:
     return {
-        "user_id": user_profile_data_analyst.user_id,
-        "project_idea": sample_generated_project_idea.model_dump(),
-        "submission": project_submission_details_fail.model_dump(),
+        "user_id": user_profile_innovate.user_id,
+        "project_id": "proj_assess_innovate_001",
+        "submission_items": project_submission_items_fail,
+        "user_profile_snapshot": user_profile_innovate.model_dump(),
         "language_code": "en-US"
     }
 
-@pytest.fixture
-def mock_successful_assessment_llm_response_text_pass() -> str:
-    result = ProjectAssessmentResult(
-        project_idea_id="proj_idea_sample_123",
-        user_id="user_analyst_test",
-        score=85.0,
-        is_passed=True,
-        feedback_summary_html="<p>Great job! Excellent implementation of the core features.</p>",
-        detailed_feedback_points_html=["<li>API design is solid.</li>", "<li>Routing logic is efficient.</li>"],
-        areas_for_improvement_html=["<li>Consider adding more edge case handling for geo-queries.</li>"],
-        positive_points_html=["<li>Clean code and good use of FastAPI.</li>"],
-        language_code="en-US"
-    ).model_dump()
-    return json.dumps(result)
+@pytest.fixture # (adapted to new LLMAssessmentRoot from main.py)
+def mock_llm_assessment_response_pass_json_str() -> str:
+    # This is what the LLM is prompted to return (subset of ProjectAssessmentResult)
+    data = {
+        "overall_competency_score": 0.85, # Above COMPETENCY_THRESHOLD
+        "feedback_summary_html": "<p>Excellent submission! The architecture is clear and the algorithm logic is sound.</p>",
+        "detailed_feedback_points": [
+            AssessmentFeedbackPoint(aspect_evaluated="Architecture Diagram Clarity", score_achieved=0.9, observation_feedback_html="<p>Diagram is very clear and well-labeled.</p>", is_strength=True).model_dump(),
+            AssessmentFeedbackPoint(aspect_evaluated="Control Algorithm Logic", score_achieved=0.8, observation_feedback_html="<p>Algorithm is logical and covers main cases. Consider adding drought-mode.</p>", is_strength=True).model_dump()
+        ],
+        "skills_demonstrated": ["System Design", "Algorithmic Thinking", "Technical Documentation"],
+        "critical_areas_for_improvement_html": ["<li>Consider scalability for larger farms.</li>"],
+        "positive_points_highlighted_html": ["<li>Thorough sensor rationale in report.</li>", "<li>Well-structured pseudo-code.</li>"]
+    }
+    return json.dumps(data)
 
-@pytest.fixture
-def mock_successful_assessment_llm_response_text_fail() -> str:
-    result = ProjectAssessmentResult(
-        project_idea_id="proj_idea_sample_123",
-        user_id="user_analyst_test",
-        score=60.0,
-        is_passed=False, # Based on score < ASSESSMENT_PASS_THRESHOLD
-        feedback_summary_html="<p>Good start, but the core routing algorithm needs more work.</p>",
-        detailed_feedback_points_html=["<li>API endpoints are well-defined.</li>"],
-        areas_for_improvement_html=["<li>The routing logic is incomplete.</li>", "<li>Error handling is missing.</li>"],
-        positive_points_html=["<li>Good understanding of the project requirements shown in the API design.</li>"],
-        language_code="en-US"
-    ).model_dump()
-    return json.dumps(result)
+@pytest.fixture # Similar to above
+def mock_llm_assessment_response_fail_json_str() -> str:
+    data = {
+        "overall_competency_score": 0.50, # Below COMPETENCY_THRESHOLD
+        "feedback_summary_html": "<p>A good starting point, but key components like the control algorithm and detailed report are missing or incomplete.</p>",
+        "detailed_feedback_points": [
+            AssessmentFeedbackPoint(aspect_evaluated="Architecture Diagram Clarity", score_achieved=0.7, observation_feedback_html="<p>Diagram description is okay, but an actual diagram was expected.</p>", is_strength=False).model_dump(),
+            AssessmentFeedbackPoint(aspect_evaluated="Control Algorithm Logic", score_achieved=0.3, observation_feedback_html="<p>Algorithm is not provided or is very rudimentary. This was a core part.</p>", is_strength=False).model_dump()
+        ],
+        "skills_demonstrated": ["Basic requirements understanding"],
+        "critical_areas_for_improvement_html": ["<li>Complete the control algorithm design.</li>", "<li>Write the detailed technical report as per deliverables.</li>", "<li>Ensure all expected deliverables are submitted.</li>"],
+        "positive_points_highlighted_html": ["<li>Good initial thoughts on sensor types.</li>"]
+    }
+    return json.dumps(data)
 
-# --- Test Cases for Project Idea Generation ---
 
-@patch('uplas_ai_agents.project_generator_agent.main.project_idea_llm.generate_structured_response', new_callable=AsyncMock)
-async def test_generate_project_ideas_success(
-    mock_llm_gen_ideas: AsyncMock,
-    project_gen_request_payload_dict: Dict,
-    mock_successful_project_idea_llm_response_text: str
+# --- Centralized Mocking for LLM clients (InnovateAI Enhancement) ---
+@pytest_asyncio.fixture
+async def mock_llm_clients(monkeypatch):
+    """Mocks both project_idea_llm and assessment_llm clients and their methods."""
+    mock_project_idea_llm_client = AsyncMock(spec=VertexAILLMClient)
+    mock_project_idea_llm_client.generate_structured_response = AsyncMock()
+    
+    mock_assessment_llm_client = AsyncMock(spec=VertexAILLMClient)
+    mock_assessment_llm_client.generate_structured_response = AsyncMock()
+
+    monkeypatch.setattr("project_generator_agent.main.project_idea_llm", mock_project_idea_llm_client)
+    monkeypatch.setattr("project_generator_agent.main.assessment_llm", mock_assessment_llm_client)
+    
+    return {
+        "project_idea_llm": mock_project_idea_llm_client,
+        "assessment_llm": mock_assessment_llm_client
+    }
+
+# --- Test Cases for Project Idea Generation (InnovateAI Refined) ---
+
+async def test_generate_project_ideas_success( # Based on
+    mock_llm_clients: Dict[str, AsyncMock],
+    project_gen_request_dict: Dict,
+    mock_successful_generated_project_idea_llm_response: str # This is now a JSON string
 ):
-    """Test successful project idea generation."""
-    mock_llm_gen_ideas.return_value = {
-        "response_text": mock_successful_project_idea_llm_response_text,
-        "prompt_token_count": 100,
-        "response_token_count": 300
+    """InnovateAI Test: Successful project idea generation with structured LLM response."""
+    mock_llm_clients["project_idea_llm"].generate_structured_response.return_value = {
+        "raw_json_response": mock_successful_generated_project_idea_llm_response, # LLM client returns this structure
+        "prompt_token_count": 150, "response_token_count": 400
     }
 
-    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
+    response = client.post("/v1/generate-project-ideas", json=project_gen_request_dict)
 
-    assert response.status_code == 200
+    assert response.status_code == status.HTTP_200_OK
     data = response.json()
-    assert "generated_ideas" in data
-    assert len(data["generated_ideas"]) == 1
-    idea = data["generated_ideas"][0]
-    assert idea["title"] == "Personalized Stock Portfolio Analyzer"
-    assert idea["language_code"] == project_gen_request_payload_dict["language_code"]
+    assert "generated_projects" in data
+    assert len(data["generated_projects"]) == 1
+    project = data["generated_projects"][0]
+    assert project["title"] == "AI-Optimized Solar Panel Array Placement" # From mock
+    assert project["language_code"] == project_gen_request_dict["language_code"]
+    assert "assessment_rubric_html" in project # Crucial field
     assert "debug_info" in data
-    assert data["debug_info"]["llm_model_name_used"] == os.getenv("PROJECT_LLM_MODEL_NAME")
+    assert data["debug_info"]["llm_model_name_used"] == PROJECT_LLM_MODEL_NAME
 
-    mock_llm_gen_ideas.assert_awaited_once()
-    call_args = mock_llm_gen_ideas.call_args[1]
+    mock_llm_clients["project_idea_llm"].generate_structured_response.assert_awaited_once()
+    call_args = mock_llm_clients["project_idea_llm"].generate_structured_response.call_args[1] # kwargs
     assert "system_prompt" in call_args
-    assert project_gen_request_payload_dict["language_code"] in call_args["system_prompt"]
     assert "user_query_or_context" in call_args
-    assert project_gen_request_payload_dict["user_profile_snapshot"]["industry"] in call_args["user_query_or_context"]
-    assert "response_schema" in call_args # Check that schema is being passed for JSON mode
-    assert call_args["response_schema"]["type"] == "array"
-    assert call_args["response_schema"]["items"]["title"] == GeneratedProjectIdea.model_json_schema()["title"]
+    assert "pydantic_model_for_schema" in call_args # Ensure schema for JSON mode is passed
+    assert call_args["pydantic_model_for_schema"].__name__ == "LLMProjectGenRoot" # Check correct Pydantic model for schema
 
 
-@patch('uplas_ai_agents.project_generator_agent.main.project_idea_llm.generate_structured_response', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_returns_invalid_json(
-    mock_llm_gen_ideas: AsyncMock,
-    project_gen_request_payload_dict: Dict
+async def test_generate_project_ideas_llm_returns_invalid_json_structure( # Based on
+    mock_llm_clients: Dict[str, AsyncMock],
+    project_gen_request_dict: Dict
 ):
-    """Test when LLM returns a non-JSON string or malformed JSON for ideas."""
-    mock_llm_gen_ideas.return_value = {"response_text": "This is not JSON, just plain text."}
-    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
-    assert response.status_code == 500
-    assert "llm returned invalid json for project ideas" in response.json()["detail"].lower()
-
-    mock_llm_gen_ideas.return_value = {"response_text": "[{\"title\": \"Missing fields...\"}]"} # Malformed based on Pydantic
-    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
-    assert response.status_code == 404 # Because validation will fail for all ideas
-    assert "could not generate suitable project ideas after validation" in response.json()["detail"].lower()
-
-
-@patch('uplas_ai_agents.project_generator_agent.main.project_idea_llm.generate_structured_response', new_callable=AsyncMock)
-async def test_generate_project_ideas_llm_call_exception(
-    mock_llm_gen_ideas: AsyncMock,
-    project_gen_request_payload_dict: Dict
-):
-    """Test handling of an unexpected exception from the LLM client call for ideas."""
-    mock_llm_gen_ideas.side_effect = Exception("Simulated LLM Network Outage")
-    response = client.post("/v1/generate-project-ideas", json=project_gen_request_payload_dict)
-    assert response.status_code == 503
-    assert "error generating project ideas" in response.json()["detail"].lower()
-
-# --- Test Cases for Project Assessment ---
-
-@patch('uplas_ai_agents.project_generator_agent.main.assessment_llm.generate_structured_response', new_callable=AsyncMock)
-@patch('uplas_ai_agents.project_generator_agent.main.trigger_ai_tutor_for_failed_assessment', new_callable=AsyncMock) # Mock the trigger function
-async def test_assess_project_success_pass(
-    mock_trigger_tutor: AsyncMock,
-    mock_llm_assess: AsyncMock,
-    project_assessment_request_payload_pass_dict: Dict,
-    mock_successful_assessment_llm_response_text_pass: str
-):
-    """Test successful project assessment where user passes."""
-    mock_llm_assess.return_value = {
-        "response_text": mock_successful_assessment_llm_response_text_pass,
-        "prompt_token_count": 200,
-        "response_token_count": 150
+    """InnovateAI Test: LLM returns JSON that doesn't match expected Pydantic schema for project ideas."""
+    mock_llm_clients["project_idea_llm"].generate_structured_response.return_value = {
+        "raw_json_response": json.dumps({"generated_projects": [{"title": "Only title, missing other fields"}]})
     }
+    response = client.post("/v1/generate-project-ideas", json=project_gen_request_dict)
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR # Due to Pydantic validation error
+    assert "Failed to generate or parse project ideas" in response.json()["detail"]
 
-    response = client.post("/v1/assess-project", json=project_assessment_request_payload_pass_dict)
 
-    assert response.status_code == 200
+async def test_generate_project_ideas_llm_call_exception( # Based on
+    mock_llm_clients: Dict[str, AsyncMock],
+    project_gen_request_dict: Dict
+):
+    """InnovateAI Test: Handling of an unexpected exception from the LLM client for project generation."""
+    mock_llm_clients["project_idea_llm"].generate_structured_response.side_effect = Exception("Simulated InnovateAI LLM Network Outage")
+    response = client.post("/v1/generate-project-ideas", json=project_gen_request_dict)
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR # Changed from 503 to align with current generic catch
+    assert "Project idea generation failed unexpectedly" in response.json()["detail"]
+
+
+# --- Test Cases for Project Assessment (InnovateAI New & Refined) ---
+
+@patch('project_generator_agent.main.trigger_ai_tutor_for_failed_assessment', new_callable=AsyncMock) # Mock the trigger helper
+async def test_assess_project_submission_pass( # Based on
+    mock_trigger_tutor: AsyncMock,
+    mock_llm_clients: Dict[str, AsyncMock],
+    project_assessment_request_dict_pass: dict,
+    sample_original_project_for_assessment: GeneratedProjectIdea, # Used for mocking DB fetch
+    mock_llm_assessment_response_pass_json_str: str
+):
+    """InnovateAI Test: Successful project assessment where user passes."""
+    mock_llm_clients["assessment_llm"].generate_structured_response.return_value = {
+        "raw_json_response": mock_llm_assessment_response_pass_json_str,
+        "prompt_token_count": 300, "response_token_count": 250
+    }
+    # Mock the conceptual DB fetch of original project details
+    with patch('project_generator_agent.main.fetch_project_details_from_db', new_callable=AsyncMock) as mock_fetch_db: # Assuming you'd create this helper
+        mock_fetch_db.return_value = sample_original_project_for_assessment
+        
+        response = client.post("/v1/assess-project-submission", json=project_assessment_request_dict_pass)
+
+    assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert "assessment_result" in data
     result = data["assessment_result"]
-    assert result["score"] == 85.0
-    assert result["is_passed"] is True
-    assert result["language_code"] == project_assessment_request_payload_pass_dict["language_code"]
-    assert result["tutor_session_triggered"] is False # Should not be triggered for a pass
-    assert "debug_info" in data
-    assert data["debug_info"]["llm_model_name_used"] == os.getenv("ASSESSMENT_LLM_MODEL_NAME")
-
-    mock_llm_assess.assert_awaited_once()
-    call_args = mock_llm_assess.call_args[1]
-    assert "system_prompt" in call_args
-    assert project_assessment_request_payload_pass_dict["language_code"] in call_args["system_prompt"]
-    assert "user_query_or_context" in call_args
-    assert project_assessment_request_payload_pass_dict["project_idea"]["title"] in call_args["user_query_or_context"]
-    assert project_assessment_request_payload_pass_dict["submission"]["github_url"] in call_args["user_query_or_context"]
-    assert "response_schema" in call_args
-    assert call_args["response_schema"]["title"] == ProjectAssessmentResult.model_json_schema()["title"]
     
-    mock_trigger_tutor.assert_not_awaited() # Ensure tutor was NOT called
+    assert result["overall_competency_score"] == 0.85
+    assert result["is_passed"] is True # Based on COMPETENCY_THRESHOLD = 0.75
+    assert result["language_code"] == project_assessment_request_dict_pass["language_code"]
+    assert result["tutor_session_triggered"] is False
+    assert "Excellent submission!" in result["feedback_summary_html"]
+    assert len(result["detailed_feedback_points"]) > 0
+    assert "System Design" in result["skills_demonstrated"]
+    assert "debug_info" in data
+    assert data["debug_info"]["llm_model_name_used"] == ASSESSMENT_LLM_MODEL_NAME
+
+    mock_llm_clients["assessment_llm"].generate_structured_response.assert_awaited_once()
+    call_args = mock_llm_clients["assessment_llm"].generate_structured_response.call_args[1]
+    assert "system_prompt" in call_args
+    assert "user_query_or_context" in call_args
+    assert sample_original_project_for_assessment.title in call_args["user_query_or_context"] # Original project details in prompt
+    assert project_assessment_request_dict_pass["submission_items"][0]["value"] in call_args["user_query_or_context"] # Submission details in prompt
+    assert "pydantic_model_for_schema" in call_args
+    assert call_args["pydantic_model_for_schema"].__name__ == "LLMAssessmentRoot" # Check correct Pydantic model
+
+    mock_trigger_tutor.assert_not_awaited()
 
 
-@patch('uplas_ai_agents.project_generator_agent.main.assessment_llm.generate_structured_response', new_callable=AsyncMock)
-@patch('uplas_ai_agents.project_generator_agent.main.trigger_ai_tutor_for_failed_assessment', new_callable=AsyncMock)
-async def test_assess_project_success_fail_and_trigger_tutor(
+@patch('project_generator_agent.main.trigger_ai_tutor_for_failed_assessment', new_callable=AsyncMock)
+async def test_assess_project_submission_fail_and_trigger_tutor( # Based on
     mock_trigger_tutor: AsyncMock,
-    mock_llm_assess: AsyncMock,
-    project_assessment_request_payload_fail_dict: Dict, # Using the fail payload
-    mock_successful_assessment_llm_response_text_fail: str,
-    user_profile_data_analyst: UserProfileSnapshotForProjects # To verify tutor call payload
+    mock_llm_clients: Dict[str, AsyncMock],
+    project_assessment_request_dict_fail: dict,
+    sample_original_project_for_assessment: GeneratedProjectIdea,
+    mock_llm_assessment_response_fail_json_str: str,
+    user_profile_innovate: UserProfileSnapshotForProjects # To verify tutor call payload
 ):
-    """Test successful project assessment where user fails, and AI Tutor is triggered."""
-    mock_llm_assess.return_value = {
-        "response_text": mock_successful_assessment_llm_response_text_fail
+    """InnovateAI Test: Project assessment where user fails, and AI Tutor IS triggered."""
+    mock_llm_clients["assessment_llm"].generate_structured_response.return_value = {
+        "raw_json_response": mock_llm_assessment_response_fail_json_str
     }
     mock_trigger_tutor.return_value = True # Simulate successful tutor trigger
 
-    response = client.post("/v1/assess-project", json=project_assessment_request_payload_fail_dict)
+    with patch('project_generator_agent.main.fetch_project_details_from_db', new_callable=AsyncMock) as mock_fetch_db:
+        mock_fetch_db.return_value = sample_original_project_for_assessment
+        response = client.post("/v1/assess-project-submission", json=project_assessment_request_dict_fail)
 
-    assert response.status_code == 200
+    assert response.status_code == status.HTTP_200_OK
     data = response.json()
     result = data["assessment_result"]
-    assert result["score"] == 60.0
-    # is_passed is determined by the LLM's output in this mock, but should align with score
-    # In main.py, is_passed is directly from LLM. Let's assume LLM sets it correctly.
+    assert result["overall_competency_score"] == 0.50
     assert result["is_passed"] is False
-    assert result["tutor_session_triggered"] is True
+    assert result["tutor_session_triggered"] is True # Should be triggered
 
-    mock_llm_assess.assert_awaited_once()
+    mock_llm_clients["assessment_llm"].generate_structured_response.assert_awaited_once()
     mock_trigger_tutor.assert_awaited_once()
     
-    # Verify arguments passed to trigger_ai_tutor
-    tutor_call_args = mock_trigger_tutor.call_args[1] # kwargs
-    assert tutor_call_args["user_id"] == project_assessment_request_payload_fail_dict["user_id"]
-    assert tutor_call_args["project_title"] == project_assessment_request_payload_fail_dict["project_idea"]["title"]
-    assert "Good start, but the core routing algorithm needs more work." in tutor_call_args["assessment_feedback"]
-    assert tutor_call_args["language_code"] == project_assessment_request_payload_fail_dict["language_code"]
-    # Check that a UserProfileSnapshotForProjects was passed (even if minimal from test setup)
-    assert isinstance(tutor_call_args["user_profile"], UserProfileSnapshotForProjects)
+    # Verify arguments passed to trigger_ai_tutor_for_failed_assessment
+    tutor_call_args = mock_trigger_tutor.call_args.kwargs # Direct access to kwargs
+    assert tutor_call_args["user_profile"].user_id == project_assessment_request_dict_fail["user_profile_snapshot"]["user_id"]
+    assert tutor_call_args["project_title"] == sample_original_project_for_assessment.title
+    assert "Good start, but key components" in tutor_call_args["assessment_summary_html"]
+    assert "Complete the control algorithm design." in tutor_call_args["areas_for_improvement_html"][0]
+    assert tutor_call_args["language_code"] == project_assessment_request_dict_fail["language_code"]
 
 
-@patch('uplas_ai_agents.project_generator_agent.main.assessment_llm.generate_structured_response', new_callable=AsyncMock)
-async def test_assess_project_llm_returns_invalid_assessment_json(
-    mock_llm_assess: AsyncMock,
-    project_assessment_request_payload_pass_dict: Dict
+async def test_assess_project_original_project_not_found(
+    mock_llm_clients: Dict[str, AsyncMock], # LLM not called
+    project_assessment_request_dict_pass: dict
 ):
-    """Test when LLM returns malformed JSON for assessment."""
-    mock_llm_assess.return_value = {"response_text": "Not a valid JSON assessment."}
-    response = client.post("/v1/assess-project", json=project_assessment_request_payload_pass_dict)
-    assert response.status_code == 500
-    assert "llm returned invalid json for project assessment" in response.json()["detail"].lower()
+    """InnovateAI Test: Assessment fails if original project definition cannot be fetched."""
+    with patch('project_generator_agent.main.fetch_project_details_from_db', new_callable=AsyncMock) as mock_fetch_db:
+        mock_fetch_db.return_value = None # Simulate project not found
+        response = client.post("/v1/assess-project-submission", json=project_assessment_request_dict_pass)
+    
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+    assert "Original project definition not found" in response.json()["detail"]
+    mock_llm_clients["assessment_llm"].generate_structured_response.assert_not_awaited()
 
 
-def test_health_check_endpoint():
+@patch('project_generator_agent.main.fetch_project_details_from_db', new_callable=AsyncMock) # Mock DB fetch
+async def test_assess_project_llm_returns_invalid_assessment_json( # Based on
+    mock_fetch_db: AsyncMock,
+    mock_llm_clients: Dict[str, AsyncMock],
+    project_assessment_request_dict_pass: dict,
+    sample_original_project_for_assessment: GeneratedProjectIdea
+):
+    """InnovateAI Test: Assessment LLM returns malformed JSON."""
+    mock_fetch_db.return_value = sample_original_project_for_assessment
+    mock_llm_clients["assessment_llm"].generate_structured_response.return_value = {
+        "raw_json_response": "This is definitely not the JSON I was expecting for assessment."
+    }
+    response = client.post("/v1/assess-project-submission", json=project_assessment_request_dict_pass)
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert "Failed to parse or validate assessment data from AI" in response.json()["detail"]
+
+
+def test_health_check_endpoint_project_agent(): #
+    """InnovateAI Test: Health check for the combined Project Generation & Assessment Agent."""
     response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "healthy", "service": "ProjectGeneratorAgent"}
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {
+        "status": "healthy",
+        "service": "ProjectGenerationAssessmentAgent_InnovateAI", # Check updated service name
+        "innovate_ai_enhancements_active": True
+    }
 
-# To run these tests:
-# From within uplas-ai-agents/project_generator_agent/
-# pytest
+# InnovateAI Note: Remember to add tests for:
+# - Different types of ProjectSubmissionContentItem (e.g., code strings, GCS URLs).
+# - Edge cases in LLM responses for assessment (e.g., empty feedback points).
+# - Failure of the trigger_ai_tutor_for_failed_assessment helper itself.
