@@ -1,4 +1,12 @@
-fastapi>=0.100.0,<0.112.0uvicorn[standard]>=0.20.0,<0.30.0pydantic>=2.0,<3.0httpx>=0.23.0,<0.28.0 
-# For making API calls to AI Tutor Agentpython-dotenv>=0.20.0,<2.0.0Google Cloud specific librariesgoogle-cloud-aiplatform>=1.40.0 
-# For Vertex AI (Gemini)google-auth>=2.0.0             
-# For authentication
+fastapi>=0.100.0,<0.112.0
+uvicorn[standard]>=0.20.0,<0.30.0
+pydantic>=2.0,<3.0
+google-cloud-aiplatform>=1.40.0 # For Vertex AI (Gemini)
+httpx>=0.23.0,<0.28.0 # For calling AI Tutor Agent
+
+# Optional: for .env file loading during local development
+# python-dotenv>=0.20.0,<2.0.0
+
+# For development and testing:
+# pytest>=7.0.0,<8.0.0
+# pytest-asyncio>=0.20.0,<0.24.0
