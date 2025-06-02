@@ -9,6 +9,7 @@ import httpx # For any potential future internal calls (not primary for this age
 import logging
 import json
 import random # For mock generation
+import re # Added for regex search in mock
 
 # GCP Clients - Import moved inside __init__ for VertexAILLMClientForNLP if needed
 # from google.cloud import aiplatform
@@ -72,16 +73,16 @@ class ProcessContentRequest(BaseModel):
             return DEFAULT_LANGUAGE
         return v
 
-# --- Vertex AI LLM Client Logic (NovaSpark Enhanced for Specificity) ---
+# --- Vertex AI LLM Client Logic (NovaSpark Enhanced for Specificity & Multilingualism) ---
 class VertexAILLMClientForNLP: 
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self.is_initialized = False # NovaSpark: Track initialization
+        self.is_initialized = False 
         if not GCP_PROJECT_ID: 
             logger.error("NovaSpark Critical: GCP_PROJECT_ID not set. Vertex AI LLM client for NLP WILL NOT FUNCTION.")
         else:
             try:
-                from google.cloud import aiplatform # Moved import here
+                from google.cloud import aiplatform 
                 aiplatform.init(project=GCP_PROJECT_ID, location=GCP_LOCATION)
                 self.is_initialized = True
                 logger.info(f"NovaSpark: Vertex AI SDK initialized for NLP Agent. Project: {GCP_PROJECT_ID}, Location: {GCP_LOCATION}")
@@ -92,167 +93,169 @@ class VertexAILLMClientForNLP:
                                pydantic_model_for_schema: Optional[Any] = None) -> str: 
         if not self.is_initialized:
             logger.error("NovaSpark Error: Vertex AI Client for NLP was not initialized. Cannot call Gemini API.")
-            # In a real scenario, might raise an exception or return an error state
-            # that translates to an HTTP 503 from the endpoint.
-            # For mock, we can proceed if specific conditions met, otherwise return error JSON.
-            if "MOCK_FORCE_SUCCESS" in os.environ: # Allow forcing mock success for testing without init
-                 pass
+            if "MOCK_FORCE_SUCCESS" in os.environ and os.environ["MOCK_FORCE_SUCCESS"].lower() == "true": # Allow forcing mock success for testing without init
+                 logger.warning("NovaSpark: Proceeding with MOCK response due to MOCK_FORCE_SUCCESS, despite client not initialized.")
             else:
                 return json.dumps({"error": "NLP LLM Client not initialized."})
 
+        # Check if we are in actual call mode or mock mode based on an env var for easier testing
+        # This allows testing the prompt construction path without making actual API calls if not desired.
+        if os.getenv("NLP_AGENT_FORCE_MOCK_API_CALLS", "true").lower() == "true":
+            # Mocked responses for NovaSpark framework (Task 5 Enhanced Mock, Task 3 Multilingual)
+            if "Your objectives are to structure and enrich this content" in system_prompt and "Divide this lesson snippet into logical topics" in system_prompt:
+                logger.info("NovaSpark Mock: Generating ENHANCED mock response for micro_segment_and_enrich_lesson.")
+                lang_match = re.search(r"language: \[([a-zA-Z]{2,3}-[a-zA-Z]{2,4})\]", system_prompt)
+                mock_lang = lang_match.group(1) if lang_match else DEFAULT_LANGUAGE
+                
+                topic_titles_map = {
+                    "en-US": ["Introduction to Specificity", "Actionable Tag Examples"],
+                    "fr-FR": ["Introduction à la Spécificité", "Exemples de Balises Actionnables"],
+                }
+                key_concepts_map = {
+                    "en-US": [["Tag Attributes", "Contextual Keywords", "Actionability"], ["Downstream Agent Use", "Personalization Priming"]],
+                    "fr-FR": [["Attributs de Balise", "Mots-clés Contextuels", "Actionnabilité"], ["Utilisation par Agent Aval", "Amorçage de Personnalisation"]],
+                }
+                content_snippets_map = { # These already contain example specific tags from previous refinement
+                    "en-US": [
+                        "Specificity in NLP tags is crucial. <analogy type=\"user_profile_driven_analogy_needed\" for_concept=\"tag_specificity\" context_keywords=\"NLP_tags,actionable_data,downstream_processing\" suggested_theme_if_obvious=\"data_pipelines\" /> This allows for better AI Tutor personalization. <visual_aid_suggestion type=\"flowchart\" description=\"Flow from NLP tag generation to AI Tutor using the tag's context_keywords and for_concept attributes to personalize an analogy.\" keywords=\"NLP_agent,AI_Tutor,personalization,tag_attributes,workflow\" complexity=\"moderate\" purpose=\"illustrate_process\" for_text_segment_id=\"nlp_spec_seg_001\" /> This is <difficulty type=\"intermediate_detail\">important</difficulty>.",
+                        "For example, an <example domain=\"user_profile_driven_example_needed\" for_concept=\"actionable_visual_aid_tag\" context_keywords=\"visual_aid_suggestion,diagram_generation,specificity\" suggested_domain_if_obvious=\"automated_report_graphics\" /> helps the TTV agent. This section is <difficulty type=\"foundational_info\">fundamental</difficulty>. Any questions? <interactive_question_opportunity text_suggestion=\"How can specific keywords in tags improve AI responses?\" />"
+                    ],
+                    "fr-FR": [ # Ensuring French mock content for all text fields
+                        "La spécificité des balises NLP est cruciale. <analogy type=\"user_profile_driven_analogy_needed\" for_concept=\"specificite_balise\" context_keywords=\"balises_NLP,donnees_actionnables,traitement_aval\" suggested_theme_if_obvious=\"pipelines_de_donnees\" /> Cela permet une meilleure personnalisation par le Tuteur IA. <visual_aid_suggestion type=\"flowchart\" description=\"Flux de la génération de balises NLP au Tuteur IA utilisant les attributs context_keywords et for_concept de la balise pour personnaliser une analogie.\" keywords=\"agent_NLP,Tuteur_IA,personnalisation,attributs_balise,workflow\" complexity=\"moderate\" purpose=\"illustrate_process\" for_text_segment_id=\"nlp_spec_seg_001_fr\" /> C'est <difficulty type=\"intermediate_detail\">important</difficulty>.",
+                        "Par exemple, un <example domain=\"user_profile_driven_example_needed\" for_concept=\"balise_aide_visuelle_actionnable\" context_keywords=\"suggestion_aide_visuelle,generation_diagramme,specificite\" suggested_domain_if_obvious=\"graphiques_rapport_automatises\" /> aide l'agent TTV. Cette section est <difficulty type=\"foundational_info\">fondamentale</difficulty>. Des questions? <interactive_question_opportunity text_suggestion=\"Comment des mots-clés spécifiques dans les balises peuvent-ils améliorer les réponses de l'IA?\" />"
+                    ],
+                }
+                
+                mock_lesson_detail = {
+                  "lesson_title": f"Leçon Enrichie sur la Spécificité des Balises ({mock_lang})" if mock_lang == "fr-FR" else f"Enriched Lesson on Tag Specificity ({mock_lang})",
+                  "lesson_summary": f"Cette leçon détaille comment créer des balises d'enrichissement très spécifiques et actionnables pour les agents IA d'Uplas, en {mock_lang}." if mock_lang == "fr-FR" else f"This lesson details how to create highly specific and actionable enrichment tags for Uplas AI agents, in {mock_lang}.",
+                  "topics": [
+                      {
+                          "topic_id": f"nlp_specificity_intro_{uuid.uuid4().hex[:4]}",
+                          "topic_title": topic_titles_map.get(mock_lang, topic_titles_map["en-US"])[0],
+                          "key_concepts": key_concepts_map.get(mock_lang, key_concepts_map["en-US"])[0],
+                          "content_with_tags": content_snippets_map.get(mock_lang, content_snippets_map["en-US"])[0],
+                          "estimated_complexity_score": 0.7,
+                          "suggested_prerequisites": [f"Balisage NLP de base ({mock_lang})" if mock_lang == "fr-FR" else f"Basic NLP Tagging ({mock_lang})"]
+                      },
+                      {
+                          "topic_id": f"nlp_actionable_examples_{uuid.uuid4().hex[:4]}",
+                          "topic_title": topic_titles_map.get(mock_lang, topic_titles_map["en-US"])[1],
+                          "key_concepts": key_concepts_map.get(mock_lang, key_concepts_map["en-US"])[1],
+                          "content_with_tags": content_snippets_map.get(mock_lang, content_snippets_map["en-US"])[1],
+                          "estimated_complexity_score": 0.5
+                      }
+                  ]
+                }
+                return json.dumps(mock_lesson_detail)
 
-        from vertexai.generative_models import GenerativeModel, Part, GenerationConfig, HarmCategory, HarmBlockThreshold # Moved import
-
-        logger.info(f"NovaSpark: Calling Gemini API for NLP. Model: {self.model_name}. JSON Output: {is_json_output}")
-        # logger.debug(f"NovaSpark NLP System Prompt (sample): {system_prompt[:350]}...")
-        # logger.debug(f"NovaSpark NLP User Query (sample): {user_query[:350]}...")
-
-        # --- NovaSpark: Actual call to Gemini API (conceptual structure) ---
-        # This part would be uncommented and fully implemented by Mugambi.
-        # For now, it falls through to mocks.
-        #
-        # try:
-        #     model = GenerativeModel(self.model_name, system_instruction=[Part.from_text(system_prompt)])
-        #     gen_config_params = {
-        #         "temperature": 0.2, # Lower temp for deterministic structuring
-        #         "max_output_tokens": 8192, 
-        #         "top_p": 0.9, "top_k": 35 
-        #     }
-        #     if is_json_output:
-        #         gen_config_params["response_mime_type"] = "application/json"
-        #         if pydantic_model_for_schema:
-        #             try:
-        #                 gen_config_params["response_schema"] = pydantic_model_for_schema.model_json_schema()
-        #                 logger.info(f"NovaSpark: Using Pydantic schema for {pydantic_model_for_schema.__name__} in Gemini call.")
-        #             except Exception as e_schema:
-        #                 logger.error(f"NovaSpark Error creating schema for {pydantic_model_for_schema.__name__}: {e_schema}")
-        #     
-        #     generation_config = GenerationConfig(**gen_config_params)
-        #     safety_settings = {
-        #         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        #         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        #         HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        #         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        #     }
-        #
-        #     api_response = await model.generate_content_async(
-        #         [Part.from_text(user_query)],
-        #         generation_config=generation_config,
-        #         safety_settings=safety_settings
-        #     )
-        #     # TODO: Add token count logging from api_response.usage_metadata
-        #     if api_response.candidates and api_response.candidates[0].content.parts:
-        #         response_text = "".join([part.text for part in api_response.candidates[0].content.parts if part.text])
-        #         logger.info(f"NovaSpark: Received LLM response (length: {len(response_text)} chars).")
-        #         return response_text
-        #     else:
-        #         logger.error("NovaSpark Error: No content in LLM response or no candidates.")
-        #         return json.dumps({"error": "LLM returned no content."}) # Ensure JSON string for error
-        #
-        # except Exception as e_gemini:
-        #     logger.error(f"NovaSpark Error during Gemini API call: {e_gemini}", exc_info=True)
-        #     return json.dumps({"error": f"Gemini API call failed: {str(e_gemini)}"})
-        #
-        # --- END Actual Call ---
-
-
-        # Mocked responses for NovaSpark framework (Task 5 Enhanced Mock):
-        if "Your objectives are to structure and enrich this content" in system_prompt and "Divide this lesson snippet into logical topics" in system_prompt:
-            logger.info("NovaSpark Mock: Generating ENHANCED mock response for micro_segment_and_enrich_lesson.")
-            # Determine language from prompt for mock generation:
-            lang_match = re.search(r"language: \[([a-zA-Z]{2,3}-[a-zA-Z]{2,4})\]", system_prompt)
-            mock_lang = lang_match.group(1) if lang_match else DEFAULT_LANGUAGE
+            elif "segment it into distinct, high-level lessons" in system_prompt: 
+                logger.info("NovaSpark Mock: Generating standard mock response for macro_segment_module.")
+                lang_match = re.search(r"language: \[([a-zA-Z]{2,3}-[a-zA-Z]{2,4})\]", system_prompt)
+                mock_lang = lang_match.group(1) if lang_match else DEFAULT_LANGUAGE
+                mock_lessons_data = [
+                    {"lesson_title": f"Leçon Simulée 1: Introduction ({mock_lang})" if mock_lang=="fr-FR" else f"Mock Lesson 1: Introduction ({mock_lang})", "text_segment_start_index": 0, "text_segment_end_index": 150},
+                    {"lesson_title": f"Leçon Simulée 2: Plongée ({mock_lang})" if mock_lang=="fr-FR" else f"Mock Lesson 2: Deep Dive ({mock_lang})", "text_segment_start_index": 151, "text_segment_end_index": 300}
+                ]
+                return json.dumps(mock_lessons_data)
             
-            topic_titles_map = {
-                "en-US": ["Introduction to Specificity", "Actionable Tag Examples"],
-                "fr-FR": ["Introduction à la Spécificité", "Exemples de Balises Actionnables"],
-                # Add other languages as needed for diverse mocking
-            }
-            key_concepts_map = {
-                "en-US": [["Tag Attributes", "Contextual Keywords", "Actionability"], ["Downstream Agent Use", "Personalization Priming"]],
-                "fr-FR": [["Attributs de Balise", "Mots-clés Contextuels", "Actionnabilité"], ["Utilisation par Agent Aval", "Amorçage de Personnalisation"]],
-            }
-            content_snippets_map = {
-                "en-US": [
-                    "Specificity in NLP tags is crucial. <analogy type=\"user_profile_driven_analogy_needed\" for_concept=\"tag_specificity\" context_keywords=\"NLP_tags,actionable_data,downstream_processing\" suggested_theme_if_obvious=\"data_pipelines\" /> This allows for better AI Tutor personalization. <visual_aid_suggestion type=\"flowchart\" description=\"Flow from NLP tag generation to AI Tutor using the tag's context_keywords and for_concept attributes to personalize an analogy.\" keywords=\"NLP_agent,AI_Tutor,personalization,tag_attributes,workflow\" complexity=\"moderate\" purpose=\"illustrate_process\" for_text_segment_id=\"nlp_spec_seg_001\" /> This is <difficulty type=\"intermediate_detail\">important</difficulty>.",
-                    "For example, an <example domain=\"user_profile_driven_example_needed\" for_concept=\"actionable_visual_aid_tag\" context_keywords=\"visual_aid_suggestion,diagram_generation,specificity\" suggested_domain_if_obvious=\"automated_report_graphics\" /> helps the TTV agent. This section is <difficulty type=\"foundational_info\">fundamental</difficulty>. Any questions? <interactive_question_opportunity text_suggestion=\"How can specific keywords in tags improve AI responses?\" />"
-                ],
-                "fr-FR": [
-                    "La spécificité des balises NLP est cruciale. <analogy type=\"user_profile_driven_analogy_needed\" for_concept=\"specificite_balise\" context_keywords=\"balises_NLP,donnees_actionnables,traitement_aval\" suggested_theme_if_obvious=\"pipelines_de_donnees\" /> Cela permet une meilleure personnalisation par le Tuteur IA. <visual_aid_suggestion type=\"flowchart\" description=\"Flux de la génération de balises NLP au Tuteur IA utilisant les attributs context_keywords et for_concept de la balise pour personnaliser une analogie.\" keywords=\"agent_NLP,Tuteur_IA,personnalisation,attributs_balise,workflow\" complexity=\"moderate\" purpose=\"illustrate_process\" for_text_segment_id=\"nlp_spec_seg_001_fr\" /> C'est <difficulty type=\"intermediate_detail\">important</difficulty>.",
-                    "Par exemple, un <example domain=\"user_profile_driven_example_needed\" for_concept=\"balise_aide_visuelle_actionnable\" context_keywords=\"suggestion_aide_visuelle,generation_diagramme,specificite\" suggested_domain_if_obvious=\"graphiques_rapport_automatises\" /> aide l'agent TTV. Cette section est <difficulty type=\"foundational_info\">fondamentale</difficulty>. Des questions? <interactive_question_opportunity text_suggestion=\"Comment des mots-clés spécifiques dans les balises peuvent-ils améliorer les réponses de l'IA?\" />"
-                ],
-            }
-            
-            mock_lesson_detail = {
-              "lesson_title": f"Enriched Lesson on Tag Specificity ({mock_lang})", # Using lang from prompt
-              "lesson_summary": f"This lesson details how to create highly specific and actionable enrichment tags for Uplas AI agents, in {mock_lang}.",
-              "topics": [
-                  {
-                      "topic_id": f"nlp_specificity_intro_{uuid.uuid4().hex[:4]}",
-                      "topic_title": topic_titles_map.get(mock_lang, topic_titles_map["en-US"])[0],
-                      "key_concepts": key_concepts_map.get(mock_lang, key_concepts_map["en-US"])[0],
-                      "content_with_tags": content_snippets_map.get(mock_lang, content_snippets_map["en-US"])[0],
-                      "estimated_complexity_score": 0.7,
-                      "suggested_prerequisites": ["Basic NLP Tagging"]
-                  },
-                  {
-                      "topic_id": f"nlp_actionable_examples_{uuid.uuid4().hex[:4]}",
-                      "topic_title": topic_titles_map.get(mock_lang, topic_titles_map["en-US"])[1],
-                      "key_concepts": key_concepts_map.get(mock_lang, key_concepts_map["en-US"])[1],
-                      "content_with_tags": content_snippets_map.get(mock_lang, content_snippets_map["en-US"])[1],
-                      "estimated_complexity_score": 0.5
-                  }
-              ]
-            }
-            return json.dumps(mock_lesson_detail)
-
-        elif "segment it into distinct, high-level lessons" in system_prompt: 
-            logger.info("NovaSpark Mock: Generating standard mock response for macro_segment_module.")
-            mock_lessons_data = [
-                {"lesson_title": "Lesson 1: The Grand Introduction to Mocking", "text_segment_start_index": 0, "text_segment_end_index": 150},
-                {"lesson_title": "Lesson 2: Deep Dive into Advanced Mocking", "text_segment_start_index": 151, "text_segment_end_index": 300}
-            ]
-            return json.dumps(mock_lessons_data)
+            logger.warning("NovaSpark Mock: No specific mock response matched in _call_gemini_api for NLP based on system prompt.")
+            return json.dumps({"warning": "No specific mock matched", "system_prompt_start": system_prompt[:100]})
         
-        logger.warning("NovaSpark Mock: No specific mock response matched in _call_gemini_api for NLP based on system prompt.")
-        return json.dumps({"warning": "No specific mock matched", "system_prompt_start": system_prompt[:100]})
+        # Actual API Call (Mugambi to implement fully)
+        from vertexai.generative_models import GenerativeModel, Part, GenerationConfig, HarmCategory, HarmBlockThreshold 
 
+        logger.info(f"NovaSpark: Calling REAL Gemini API for NLP. Model: {self.model_name}. JSON Output: {is_json_output}")
+        # logger.debug(f"NovaSpark NLP System Prompt (full): {system_prompt}") # Be careful with logging full prompts in prod
+        # logger.debug(f"NovaSpark NLP User Query (full): {user_query}")
+
+        try:
+            model = GenerativeModel(self.model_name, system_instruction=[Part.from_text(system_prompt)])
+            gen_config_params = {
+                "temperature": 0.2, 
+                "max_output_tokens": 8192, 
+                "top_p": 0.9, "top_k": 35 
+            }
+            if is_json_output:
+                gen_config_params["response_mime_type"] = "application/json"
+                if pydantic_model_for_schema:
+                    try:
+                        gen_config_params["response_schema"] = pydantic_model_for_schema.model_json_schema()
+                        logger.info(f"NovaSpark: Using Pydantic schema for {pydantic_model_for_schema.__name__} in Gemini call.")
+                    except Exception as e_schema:
+                        logger.error(f"NovaSpark Error creating schema for {pydantic_model_for_schema.__name__}: {e_schema}", exc_info=True)
+            
+            generation_config = GenerationConfig(**gen_config_params)
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            }
+
+            api_response = await model.generate_content_async(
+                [Part.from_text(user_query)],
+                generation_config=generation_config,
+                safety_settings=safety_settings
+            )
+            
+            response_text = ""
+            if api_response.candidates:
+                candidate = api_response.candidates[0]
+                if candidate.finish_reason not in [candidate.FinishReason.STOP, candidate.FinishReason.MAX_TOKENS]:
+                    logger.warning(f"NovaSpark LLM Warning: NLP Agent response generation finished with reason: {candidate.finish_reason.name if candidate else 'N/A'}.")
+                    # Handle safety or other non-stop reasons by returning an error JSON or specific structure
+                    error_payload = {"error": f"Content generation stopped due to: {candidate.finish_reason.name if candidate else 'Unknown Reason'}", "details": str(candidate.safety_ratings if hasattr(candidate, 'safety_ratings') else "No details")}
+                    return json.dumps(error_payload)
+
+                if candidate.content and candidate.content.parts:
+                    response_text = "".join([part.text for part in candidate.content.parts if part.text])
+            
+            if not response_text and candidate and candidate.finish_reason == candidate.FinishReason.STOP:
+                 response_text = "{}" # Empty JSON if expecting JSON but got nothing
+                 logger.warning("NovaSpark LLM Warning: NLP Agent received successful stop but no text content. Assuming empty JSON.")
+
+            # Log token usage if available
+            if hasattr(api_response, 'usage_metadata') and api_response.usage_metadata:
+                logger.info(f"NovaSpark LLM Token Usage: Prompt={api_response.usage_metadata.prompt_token_count}, Response={api_response.usage_metadata.candidates_token_count}")
+
+            if not response_text: # If still empty after all checks
+                logger.error("NovaSpark Error: No content in LLM response or no candidates even after successful stop.")
+                return json.dumps({"error": "LLM returned no parsable content."})
+            
+            logger.info(f"NovaSpark: Received LLM response (length: {len(response_text)} chars).")
+            return response_text
+        
+        except Exception as e_gemini:
+            logger.error(f"NovaSpark Error during Gemini API call: {e_gemini}", exc_info=True)
+            return json.dumps({"error": f"Gemini API call failed: {str(e_gemini)}"})
 
     async def macro_segment_module(self, full_text: str, language_code: str, module_title: Optional[str]) -> List[Dict[str, Any]]: 
         system_prompt = ( 
-            "You are an expert instructional designer specializing in modular content creation. "
-            f"Your task is to analyze the provided course module text, which is in [{language_code}], "
-            f"and segment it into distinct, coherent, high-level lessons. Each lesson should represent a significant unit of learning."
-            f"For each identified lesson, provide a concise and engaging 'lesson_title' in [{language_code}]. "
+            "You are an expert instructional designer specializing in modular content creation.\n"
+            f"**CRITICAL LANGUAGE MANDATE: ALL textual content you generate for the 'lesson_title' field MUST be strictly and exclusively in the specified language: [{language_code}]. Ensure natural phrasing in [{language_code}].**\n\n" # Task 3 Emphasis
+            f"Your task is to analyze the provided course module text (which is in language [{language_code}]) "
+            f"and segment it into distinct, coherent, high-level lessons. Each lesson should represent a significant unit of learning.\n"
+            f"For each identified lesson, provide a concise and engaging 'lesson_title' IN [{language_code}].\n" 
             "Also, provide the exact 'text_segment_start_index' (integer, 0-based) and 'text_segment_end_index' (integer, exclusive) "
-            "from the original text that constitutes that lesson. "
-            f"The overall module is titled: '{module_title if module_title else 'Not Provided'}'. "
-            "Focus on logical flow, clear topic transitions, and appropriate lesson lengths for online learning. "
+            "from the original text that constitutes that lesson.\n"
+            f"The overall module is titled: '{module_title if module_title else 'Not Provided'}'.\n"
+            "Focus on logical flow, clear topic transitions, and appropriate lesson lengths for online learning.\n"
             "Respond ONLY with a valid JSON list of objects. Each object in the list MUST have three keys: "
             "'lesson_title' (string), 'text_segment_start_index' (integer), and 'text_segment_end_index' (integer)."
         )
-        user_query = f"Here is the full module text in [{language_code}] to segment into lessons:\n\n---MODULE TEXT START---\n{full_text}\n---MODULE TEXT END---"
-
-        # NovaSpark: Define Pydantic model for expected list structure for validation if using response_schema with Gemini
-        class MacroSegmentItem(BaseModel):
-            lesson_title: str
-            text_segment_start_index: int
-            text_segment_end_index: int
-        class MacroSegmentList(BaseModel):
-            segments: List[MacroSegmentItem] # If LLM can wrap it in a root key
+        user_query = f"Segment this module text into lessons, ensuring the 'lesson_title' for each is IN LANGUAGE [{language_code}]:\n\n---MODULE TEXT START---\n{full_text}\n---MODULE TEXT END---"
 
         response_str = "{}"
         try:
-            # For macro-segmentation, direct JSON list is fine, Pydantic schema might be overkill for Gemini's direct list output.
             response_str = await self._call_gemini_api(system_prompt, user_query, is_json_output=True)
             lessons_data = json.loads(response_str)
             if not isinstance(lessons_data, list): 
                 logger.error(f"NovaSpark Error: LLM response for macro-segmentation was not a list. Response: {response_str[:300]}")
                 raise ValueError("LLM response for macro-segmentation was not a list.")
-            for item in lessons_data: # Validate each item
+            for item in lessons_data: 
                 if not all(k in item for k in ("lesson_title", "text_segment_start_index", "text_segment_end_index")):
                     logger.error(f"NovaSpark Error: Invalid item in macro-segmentation list: {item}. Missing required keys.")
-                    # Optionally, filter out invalid items instead of raising immediately
                     raise ValueError("Invalid item structure in LLM response for macro-segmentation.")
                 if not (isinstance(item["text_segment_start_index"], int) and isinstance(item["text_segment_end_index"], int) and item["text_segment_start_index"] <= item["text_segment_end_index"]):
                     logger.error(f"NovaSpark Error: Invalid indices in macro-segmentation item: {item}.")
@@ -265,13 +268,13 @@ class VertexAILLMClientForNLP:
             logger.error(f"NovaSpark Error in macro_segment_module: {e}", exc_info=True)
             raise
 
-    # NovaSpark Enhanced: `micro_segment_and_enrich_lesson` with a more specific prompt (Task 5)
     async def micro_segment_and_enrich_lesson(self, lesson_text_snippet: str, lesson_title_from_macro: str, language_code: str) -> Dict[str, Any]: 
-        # This is the core prompt refined for Task 5
+        # NovaSpark Enhanced: Task 3 - Added global language mandate. Task 5 refinements already present.
         system_prompt = (
-            f"You are an AI pedagogical content specialist for Uplas EdTech. Your task is to meticulously analyze the lesson text snippet provided (lesson title: '{lesson_title_from_macro}', language: [{language_code}]) and restructure it into a detailed JSON object. "
+            f"You are an AI pedagogical content specialist for Uplas EdTech. Your task is to meticulously analyze the lesson text snippet provided (lesson title: '{lesson_title_from_macro}', original language of snippet: [{language_code}]) and restructure it into a detailed JSON object.\n"
+            f"**CRITICAL LANGUAGE MANDATE: ALL textual content you generate for ANY field in the JSON output (including, but not limited to, 'lesson_summary', all 'topic_title's, all 'key_concepts' strings, and any text within any attribute of any semantic tag such as 'description' in visual_aid_suggestion or 'text_suggestion' in interactive_question_opportunity) MUST be strictly and exclusively in the specified language: [{language_code}]. Do not mix languages within the response. Ensure natural phrasing in [{language_code}].**\n\n"
             "Your objectives are to structure and enrich this content:"
-            f"1. Generate a concise 'lesson_summary' (1-2 sentences) for this snippet, IN [{language_code}]."
+            f"1. 'lesson_summary': Generate a concise summary (1-2 sentences) for this snippet, IN [{language_code}]."
             "2. Divide the snippet into logical, granular 'topics'. For each topic:"
             "   a. 'topic_id': Generate a unique, url-friendly ID (e.g., 't1_concept_x')."
             f"  b. 'topic_title': Create a clear, descriptive title IN [{language_code}]."
@@ -279,143 +282,144 @@ class VertexAILLMClientForNLP:
             "   d. 'content_with_tags': This is the original text for the topic, but you MUST intelligently intersperse it with XML-like semantic tags where pedagogically appropriate. ALL TEXT generated within tag attributes (like descriptions or suggestions) MUST also be IN [{language_code}]."
             "      Focus on creating HIGHLY SPECIFIC and ACTIONABLE tags:"
             "      - `<analogy type=\"user_profile_driven_analogy_needed\" for_concept=\"[specific_concept_being_explained_by_analogy]\" context_keywords=\"[comma_separated_keywords_from_text_segment_related_to_concept]\" suggested_theme_if_obvious=\"[e.g.,_finance,_sports_if_text_implies_a_theme]\" />` "
-            "        (Use this when an analogy would clarify a complex idea. The AI Tutor will use these attributes and the user's profile to generate the final analogy. Ensure `for_concept` and `context_keywords` are very specific to the text section where the tag is placed.)"
+            "        (Ensure `for_concept` and `context_keywords` are very specific.)"
             "      - `<example domain=\"user_profile_driven_example_needed\" for_concept=\"[specific_concept_being_illustrated]\" context_keywords=\"[comma_separated_keywords_from_text_segment]\" suggested_domain_if_obvious=\"[e.g.,_software_testing,_medical_diagnosis_if_text_implies]\" />` "
-            "        (Use for illustrating points. Ensure `for_concept` and `context_keywords` are specific. The AI Tutor will use these to generate a personalized example.)"
-            "      - `<interactive_question_opportunity text_suggestion=\"[Suggest_a_brief_checking_question_in_{language_code}_here]\" />` (At points good for engagement/reflection. The question itself should be IN [{language_code}].)"
-            "      - `<visual_aid_suggestion type=\"[diagram|chart|animation_cue|image_idea|code_snippet_highlight]\" description=\"[Detailed_description_of_visual_IN_{language_code}]\" keywords=\"[comma_separated_keywords_from_text_relevant_to_visual_IN_{language_code}]\" complexity=\"[simple|moderate|detailed]\" purpose=\"[illustrate_process|compare_data|show_structure|engagement]\" for_text_segment_id=\"[lesson_title_slugified]_[topic_index]_[tag_index]\" />` "
-            "        (For concepts best shown visually. Make the `description` and `keywords` very specific and actionable. `for_text_segment_id` should be unique within the lesson.)"
-            "      - `<difficulty type=\"[foundational_info|intermediate_detail|advanced_detail]\" />` (To classify content complexity.)"
-            "   e. Optionally: 'estimated_complexity_score' (float, 0.0-1.0) and 'suggested_prerequisites' (list of strings IN [{language_code}])."
-            f"All text content you generate for any field (titles, concepts, summaries, tag attributes like descriptions or suggestions) MUST be IN [{language_code}]."
-            "Respond ONLY with a single, valid JSON object. The root object should have 'lesson_title' (string, use the provided '{lesson_title_from_macro}'), 'lesson_summary' (string), and 'topics' (a list of topic objects as described above)."
+            "        (Ensure `for_concept` and `context_keywords` are specific.)"
+            "      - `<interactive_question_opportunity text_suggestion=\"[Suggest_a_brief_checking_question_in_{language_code}_here]\" />` (Question IN [{language_code}].)"
+            "      - `<visual_aid_suggestion type=\"[diagram|chart|etc]\" description=\"[Detailed_description_of_visual_IN_{language_code}]\" keywords=\"[keywords_IN_{language_code}]\" complexity=\"[simple|moderate|detailed]\" purpose=\"[purpose]\" for_text_segment_id=\"[lesson_title_slugified]_[topic_index]_[tag_index]\" />` "
+            "        (Make `description` and `keywords` specific and actionable. `for_text_segment_id` unique.)"
+            "      - `<difficulty type=\"[foundational_info|intermediate_detail|advanced_detail]\" />`"
+            f"  e. Optionally: 'estimated_complexity_score' (float, 0.0-1.0) and 'suggested_prerequisites' (list of strings IN [{language_code}])."
+            f"FINAL REMINDER: Every piece of text you generate for any field or attribute MUST be IN [{language_code}]. NO EXCEPTIONS."
+            "Respond ONLY with a single, valid JSON object. The root object should have 'lesson_title' (use '{lesson_title_from_macro}'), 'lesson_summary', and 'topics' (list of topic objects)."
         )
-        user_query = f"Analyze and enrich this lesson text snippet, which is part of lesson '{lesson_title_from_macro}', in [{language_code}]:\n\n---LESSON SNIPPET START---\n{lesson_text_snippet}\n---LESSON SNIPPET END---"
+        user_query = f"Analyze and enrich this lesson text snippet for lesson '{lesson_title_from_macro}', ensuring ALL generated text is IN LANGUAGE [{language_code}]:\n\n---LESSON SNIPPET START---\n{lesson_text_snippet}\n---LESSON SNIPPET END---"
 
-        # NovaSpark: Define Pydantic model for the expected root structure of the LLM's JSON response for this task
-        class MicroSegmentTopic(BaseModel): # Corresponds to NlpTopic but for direct LLM output validation
-            topic_id: str
-            topic_title: str
-            key_concepts: List[str]
-            content_with_tags: str
-            estimated_complexity_score: Optional[float] = None
-            suggested_prerequisites: Optional[List[str]] = None
+        class MicroSegmentTopic(BaseModel): 
+            topic_id: str; topic_title: str; key_concepts: List[str]; content_with_tags: str
+            estimated_complexity_score: Optional[float] = None; suggested_prerequisites: Optional[List[str]] = None
         class MicroSegmentRoot(BaseModel):
-            lesson_title: str
-            lesson_summary: str
-            topics: List[MicroSegmentTopic]
+            lesson_title: str; lesson_summary: str; topics: List[MicroSegmentTopic]
         
         response_str = "{}"
         try:
             response_str = await self._call_gemini_api(system_prompt, user_query, is_json_output=True, pydantic_model_for_schema=MicroSegmentRoot)
-            enriched_lesson_data = json.loads(response_str)
-            
-            # Validate with Pydantic model after parsing JSON
-            validated_data = MicroSegmentRoot(**enriched_lesson_data) # This will raise ValidationError if malformed
-            logger.info(f"NovaSpark: Successfully parsed and validated micro-segmentation response for '{lesson_title_from_macro}'.")
+            # Basic check for error payload from _call_gemini_api itself before JSON parsing
+            if response_str.startswith('{"error":'):
+                logger.error(f"NovaSpark Error from _call_gemini_api (possibly during API call or init): {response_str}")
+                # Convert to a ValueError that the endpoint can catch and return a 500
+                raise ValueError(f"LLM client error: {json.loads(response_str).get('error', 'Unknown LLM client error')}")
 
-            # NovaSpark: Further checks can be done here if needed, e.g., all generated text fields are in target lang (harder to auto-validate)
+            enriched_lesson_data = json.loads(response_str)
+            validated_data = MicroSegmentRoot(**enriched_lesson_data) 
+            logger.info(f"NovaSpark: Successfully parsed and validated micro-segmentation response for '{lesson_title_from_macro}'.")
             for topic in validated_data.topics:
-                if not all(k_attr in topic.model_fields for k_attr in ("topic_id", "topic_title", "key_concepts", "content_with_tags")): # Check against Pydantic model fields
-                     logger.warning(f"NovaSpark Warning: A topic in micro-segmentation is missing required keys: {topic.topic_id if hasattr(topic, 'topic_id') else 'N/A'}")
-            return validated_data.model_dump() # Return as dict
+                # Simple check, more robust validation might be needed depending on LLM consistency
+                if not all(getattr(topic, k, None) is not None for k in ("topic_id", "topic_title", "key_concepts", "content_with_tags")):
+                     logger.warning(f"NovaSpark Warning: A topic in micro-segmentation might be missing required string/list keys after validation: {getattr(topic, 'topic_id', 'N/A')}")
+            return validated_data.model_dump()
             
         except json.JSONDecodeError as e: 
             logger.error(f"NovaSpark JSONDecodeError in micro_segment_and_enrich_lesson: {e}. Response: {response_str[:500]}", exc_info=True)
             raise ValueError(f"Failed to parse LLM response for micro-segmentation: {e}")
-        except Exception as e: # Catches Pydantic's ValidationError and other exceptions
+        except Exception as e: 
             logger.error(f"NovaSpark Error in micro_segment_and_enrich_lesson (Validation or other): {e}. Response: {response_str[:500]}", exc_info=True)
+            # This will catch Pydantic's ValidationError as well
             raise ValueError(f"LLM response validation or other error in micro-segmentation: {e}")
-
 
 nlp_llm_client = VertexAILLMClientForNLP(model_name=NLP_LLM_MODEL_NAME) 
 
 app = FastAPI( 
-    title="Uplas NLP Content Structuring & Augmentation Agent - NovaSpark Specificity Edition",
-    description="Processes raw course content into structured, richly tagged, and actionable learning units using Vertex AI, with NovaSpark's specificity enhancements.",
-    version="0.3.0" # Incremented for Task 5
+    title="Uplas NLP Content Agent - NovaSpark Multilingual & Specificity Edition",
+    description="Processes raw course content into structured, richly tagged, actionable, and strictly multilingual learning units using Vertex AI.",
+    version="0.3.1" 
 )
 
 @app.post("/v1/process-course-content", response_model=ProcessedModule, status_code=status.HTTP_200_OK) 
 async def process_content_endpoint(request_data: ProcessContentRequest, background_tasks: BackgroundTasks): 
     start_time = time.perf_counter()
-    logger.info(f"NovaSpark: Received request to process module_id: {request_data.module_id} in language: {request_data.language_code}")
+    logger.info(f"NovaSpark NLP: Request for module_id: {request_data.module_id}, lang: {request_data.language_code}")
 
     if not GCP_PROJECT_ID or not nlp_llm_client.is_initialized: 
         logger.error("NovaSpark Critical: NLP service cannot operate (GCP_PROJECT_ID missing or LLM client not initialized).")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="NLP service is not properly configured.")
 
     final_lessons_processed: List[NlpLesson] = []
-    # all_visual_aid_suggestions_module_level: List[Dict[str,str]] = [] # Logic for this not yet implemented
-
+    
     try:
-        logger.info(f"NovaSpark Stage 1: Starting macro-segmentation for module: {request_data.module_id}")
+        logger.info(f"NovaSpark NLP Stage 1: Starting macro-segmentation for module: {request_data.module_id}")
         macro_segments = await nlp_llm_client.macro_segment_module( 
             request_data.raw_text_content,
             request_data.language_code,
             request_data.module_title
         )
-        logger.info(f"NovaSpark Stage 1: Macro-segmentation complete. Found {len(macro_segments)} potential lessons.")
+        logger.info(f"NovaSpark NLP Stage 1: Macro-segmentation complete. Found {len(macro_segments)} potential lessons.")
 
         for i, segment_info in enumerate(macro_segments): 
-            lesson_title_from_macro = segment_info.get("lesson_title", f"Lesson {i+1} (Title N/A)")
+            lesson_title_from_macro = segment_info.get("lesson_title", f"Lesson {i+1} (Title N/A from macro)")
             start_idx = segment_info.get("text_segment_start_index")
             end_idx = segment_info.get("text_segment_end_index")
 
-            if start_idx is None or end_idx is None or not isinstance(start_idx, int) or not isinstance(end_idx, int) or start_idx >= end_idx or end_idx > len(request_data.raw_text_content) : 
-                logger.warning(f"NovaSpark Warning: Skipping invalid segment (bad indices: {start_idx}-{end_idx}, text_len: {len(request_data.raw_text_content)}): {segment_info} for module {request_data.module_id}")
+            # Rigorous index validation
+            if not (isinstance(start_idx, int) and isinstance(end_idx, int) and \
+                    0 <= start_idx <= end_idx <= len(request_data.raw_text_content)):
+                logger.warning(f"NovaSpark NLP Warning: Skipping invalid segment (indices: {start_idx}-{end_idx}, text_len: {len(request_data.raw_text_content)}): {segment_info} for module {request_data.module_id}")
                 continue
+            
+            # Skip if start_idx == end_idx resulting in empty snippet (unless it's a zero-length marker if that's ever valid)
+            if start_idx == end_idx and start_idx < len(request_data.raw_text_content) : # Allow for marker at end if needed
+                logger.info(f"NovaSpark NLP Info: Skipping zero-length segment for lesson: {lesson_title_from_macro}")
+                continue
+
 
             lesson_text_snippet = request_data.raw_text_content[start_idx:end_idx]
-            if not lesson_text_snippet.strip(): 
-                logger.info(f"NovaSpark Info: Skipping empty lesson text snippet for lesson: {lesson_title_from_macro}")
+            if not lesson_text_snippet.strip() and start_idx < end_idx : # Only skip if truly empty and not just whitespace
+                logger.info(f"NovaSpark NLP Info: Skipping effectively empty lesson text snippet for lesson: {lesson_title_from_macro}")
                 continue
 
-            logger.info(f"NovaSpark Stage 2: Starting micro-segmentation for lesson: '{lesson_title_from_macro}'")
+            logger.info(f"NovaSpark NLP Stage 2: Starting micro-segmentation for lesson: '{lesson_title_from_macro}' (snippet length: {len(lesson_text_snippet)})")
             enriched_lesson_data_dict = await nlp_llm_client.micro_segment_and_enrich_lesson( 
                 lesson_text_snippet,
                 lesson_title_from_macro,
                 request_data.language_code
-            ) # This now returns a dict
+            ) 
             
             current_lesson_topics_processed: List[NlpTopic] = []
             for topic_data_dict in enriched_lesson_data_dict.get("topics", []): 
                 try:
-                    # NovaSpark: Create NlpTopic from the dict structure returned by micro_segment_and_enrich_lesson
-                    processed_topic = NlpTopic(**topic_data_dict) # Pydantic validation happens here
+                    processed_topic = NlpTopic(**topic_data_dict) 
                     current_lesson_topics_processed.append(processed_topic)
-                except Exception as e_topic_val: # Catch Pydantic validation error or others
-                    logger.warning(f"NovaSpark Warning: Failed to validate/process a topic from LLM output: {topic_data_dict.get('topic_id', 'N/A')}. Error: {e_topic_val}", exc_info=True)
+                except Exception as e_topic_val: 
+                    logger.warning(f"NovaSpark NLP Warning: Failed to validate/process a topic from LLM output: {topic_data_dict.get('topic_id', 'N/A')}. Error: {e_topic_val}", exc_info=True)
             
+            # Use title from enriched data if LLM provided it, otherwise fallback to macro-segmented title
             final_lesson_title = enriched_lesson_data_dict.get("lesson_title", lesson_title_from_macro) 
             lesson_summary_from_llm = enriched_lesson_data_dict.get("lesson_summary")
 
-            if current_lesson_topics_processed: # Only add lesson if it has topics
+            if current_lesson_topics_processed: 
                 final_lessons_processed.append(NlpLesson( 
                     lesson_title=final_lesson_title,
                     lesson_summary=lesson_summary_from_llm,
                     topics=current_lesson_topics_processed
                 ))
-                logger.info(f"NovaSpark Stage 2: Micro-segmentation for lesson '{final_lesson_title}' complete. {len(current_lesson_topics_processed)} topics processed.")
+                logger.info(f"NovaSpark NLP Stage 2: Lesson '{final_lesson_title}' processed with {len(current_lesson_topics_processed)} topics.")
             else:
-                logger.warning(f"NovaSpark Stage 2: No topics processed for lesson '{final_lesson_title}'. Skipping lesson.")
-
+                logger.warning(f"NovaSpark NLP Stage 2: No topics successfully processed for lesson '{final_lesson_title}'. Skipping this lesson.")
 
     except ValueError as ve: 
-        logger.error(f"NovaSpark ValueError during content processing for {request_data.module_id}: {ve}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error processing content: {str(ve)}")
+        logger.error(f"NovaSpark NLP ValueError during content processing for {request_data.module_id}: {ve}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error processing content due to LLM response issue or validation: {str(ve)}")
     except Exception as e: 
-        logger.error(f"NovaSpark Unexpected error during content processing for {request_data.module_id}: {e}", exc_info=True)
+        logger.error(f"NovaSpark NLP Unexpected error during content processing for {request_data.module_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred during content processing: {str(e)}")
 
     if not final_lessons_processed: 
-        logger.warning(f"NovaSpark Warning: No lessons were successfully processed for module: {request_data.module_id}. This might indicate issues with content or LLM responses.")
-        # Return empty list of lessons but still 200 OK, or raise error? For now, 200 OK with empty.
-
+        logger.warning(f"NovaSpark NLP Warning: No lessons were successfully processed for module: {request_data.module_id}. This might indicate issues with content or LLM responses.")
+    
     end_time = time.perf_counter()
     processing_time_ms = (end_time - start_time) * 1000 
 
-    logger.info(f"NovaSpark: Successfully processed module_id: {request_data.module_id}. Time taken: {processing_time_ms:.2f} ms. Generated {len(final_lessons_processed)} lessons.")
+    logger.info(f"NovaSpark NLP: Successfully processed module_id: {request_data.module_id}. Time taken: {processing_time_ms:.2f} ms. Generated {len(final_lessons_processed)} lessons.")
     return ProcessedModule( 
         source_module_id=request_data.module_id,
         module_title=request_data.module_title,
@@ -425,10 +429,9 @@ async def process_content_endpoint(request_data: ProcessContentRequest, backgrou
         llm_model_used=nlp_llm_client.model_name
     )
 
-# --- Health Check Endpoint ---
 @app.get("/health", status_code=status.HTTP_200_OK) 
 async def health_check():
-    service_name = "NLP_Content_Agent_NovaSpark_Specificity"
+    service_name = "NLP_Content_Agent_NovaSpark_Multilingual_Specificity"
     if not GCP_PROJECT_ID or not NLP_LLM_MODEL_NAME: 
         return {"status": "unhealthy", "reason": "Required configurations (GCP_PROJECT_ID, NLP_LLM_MODEL_NAME) are missing.", "service": service_name, "innovate_ai_enhancements_active": True}
     if nlp_llm_client is None or not nlp_llm_client.is_initialized: 
