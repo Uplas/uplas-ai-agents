@@ -2,7 +2,7 @@
 # Dockerfile for the Uplas Unified AI Agent Service
 
 # 1. Use an official, slim Python runtime as a parent image
-FROM python:3.9-slim
+FROM python:3.9-slim-bookworm
 
 # 2. Set environment variables for Python
 ENV PYTHONDONTWRITEBYTECODE 1
