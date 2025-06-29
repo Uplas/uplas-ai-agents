@@ -4,46 +4,23 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 # Load environment variables from .env file
 load_dotenv()
 
-# --- Mock LLM Client ---
-# This mock client simulates the behavior of the Vertex AI LLM client
-# for local development without making any actual API calls.
+# --- Gemini API Configuration ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY not found in environment variables. Please set it in your .env file.")
 
-class MockLLMClient:
-    """A mock LLM client that returns predefined responses."""
+genai.configure(api_key=GEMINI_API_KEY)
 
-    def predict(self, prompt: str) -> str:
-        """Simulates a prediction by returning a mock response."""
-        logging.info(f"MockLLMClient received prompt: {prompt[:100]}...")
-        # This is a sample response. You can customize it for your testing needs.
-        mock_response = {
-            "summary": "This is a mock summary of the lesson.",
-            "questions": [
-                {
-                    "question": "What is the capital of France?",
-                    "options": ["Paris", "London", "Berlin", "Madrid"],
-                    "answer": "Paris"
-                },
-                {
-                    "question": "What is 2 + 2?",
-                    "options": ["3", "4", "5", "6"],
-                    "answer": "4"
-                }
-            ]
-        }
-        import json
-        return json.dumps(mock_response)
+# Initialize the Gemini model
+llm_client = genai.GenerativeModel('gemini-pro')
 
 # --- FastAPI App Setup ---
-
 app = FastAPI()
-
-# Initialize the mock client
-llm_client = MockLLMClient()
-
 logging.basicConfig(level=logging.INFO)
 
 class LessonContent(BaseModel):
@@ -52,26 +29,30 @@ class LessonContent(BaseModel):
 @app.post("/process_lesson")
 def process_lesson(lesson: LessonContent):
     """
-    Processes the lesson content to generate a summary and questions.
-    This endpoint now uses a mock LLM client for local development.
+    Processes the lesson content to generate a summary and questions using the Gemini API.
     """
     try:
-        logging.info("Processing lesson content...")
-        # The prompt is created, but the mock client will return a fixed response.
-        prompt = f"Summarize the following lesson and generate 3-5 multiple choice questions with answers:\n\n{lesson.content}"
+        logging.info("Processing lesson content with Gemini API...")
         
-        response_text = llm_client.predict(prompt)
+        prompt = f"Summarize the following lesson and generate 3-5 multiple choice questions with answers, formatted as a single JSON object with keys 'summary' and 'questions'. The 'questions' key should be a list of objects, each with 'question', 'options', and 'answer' keys:\n\n{lesson.content}"
         
-        logging.info("Successfully processed lesson content with mock client.")
-        return {"processed_content": response_text}
+        response = llm_client.generate_content(prompt)
+        
+        # Clean up the response to ensure it's valid JSON
+        processed_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        
+        logging.info("Successfully processed lesson content with Gemini API.")
+        # The response from Gemini should be a JSON string, which we return directly.
+        return {"processed_content": processed_text}
+        
     except Exception as e:
-        logging.error(f"Error processing lesson: {e}")
+        logging.error(f"Error processing lesson with Gemini API: {e}")
         raise HTTPException(status_code=500, detail="Failed to process lesson content.")
 
 @app.get("/")
 def read_root():
-    return {"message": "NLP Content Agent is running in local mode."}
+    return {"message": "NLP Content Agent with Gemini is running."}
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8001))
     uvicorn.run(app, host="0.0.0.0", port=port)
